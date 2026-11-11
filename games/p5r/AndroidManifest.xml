@@ -65,6 +65,10 @@
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density">
             <meta-data android:name="android.app.lib_name" android:value="p5r" />
         </activity>
+        <!-- Second-screen companion: shows HP/SP on the AYN Thor's Display #4 (FLAG_PRESENTATION). -->
+        <service
+            android:name=".SecondScreenService"
+            android:exported="false" />
             <provider
             android:name=".LogProvider"
             android:authorities="io.github.p5rrecomp.logprovider"

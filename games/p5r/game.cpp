@@ -18,6 +18,7 @@
 #include <nx/runtime.h>
 
 #include "platform.h"
+#include "second_screen.h"
 
 namespace nx {
 
@@ -122,8 +123,9 @@ bool auto_fps() {
     return on;
 }
 
-bool g_scene = false;  // scan_tasks: the title or a cutscene is running, and no battle
-bool g_field_scene = false;  // scan_tasks: a scripted field scene (EventSkip, no event_proc, no battle): steps only
+bool g_scene = false;       // scan_tasks: the title or a cutscene is running, and no battle
+bool g_field_scene = false; // scan_tasks: a scripted field scene (EventSkip, no event_proc, no battle): steps only
+bool g_battle = false;      // scan_tasks: a battle task is active (read by second_screen::update)
 
 // The lowest target: in scenes NX_P5R_SCENE_FPS (10), in field scenes a third of the cap, elsewhere NX_P5R_MIN_FPS
 // (30); the number in the data folder's
@@ -310,7 +312,7 @@ void scan_tasks() {
     if (field != g_field_scene)
         log("p5r: field scene %s: the target %s", field ? "starts" : "ends",
             field ? "follows the device in steps of the cap, a half or a third of it" : "stays at 30 or more");
-    g_scene = scene, g_field_scene = field;
+    g_scene = scene, g_field_scene = field, g_battle = battle;
     // Films hide the 3D: the depth pyramid the culling reads need not come back to memory meanwhile (runtime).
     static bool paused = false;
     if (movie != paused) {
@@ -346,6 +348,9 @@ void frame_origin() {
 
 void interval_setter_hook(CPU& c) {
     scan_tasks();
+    // Feed the second-screen companion every 6 frames (~5 Hz at 30 fps, ~10 Hz at 60 fps).
+    static int ss_tick = 0;
+    if (++ss_tick >= 6) { ss_tick = 0; p5r::second_screen::update(g_main_base, g_battle); }
     const uint64_t period = game_clock();
     frame_origin();
     const int now = target_fps();

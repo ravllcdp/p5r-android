@@ -607,6 +607,7 @@ public class Launcher extends Activity {
                     else if (!prepared()) prepare();
                     else if (openGameForRuntime()) {
                         save();
+                        startService(new Intent(Launcher.this, SecondScreenService.class));
                         startActivity(new Intent(Launcher.this, android.app.NativeActivity.class));
                     } else {
                         tell(t("No se pudo abrir el juego", "The game could not be opened"), gameName());
@@ -622,6 +623,7 @@ public class Launcher extends Activity {
                     return;
                 }
                 save();
+                startService(new Intent(Launcher.this, SecondScreenService.class));
                 startActivity(new Intent(Launcher.this, android.app.NativeActivity.class));
             }
         });
