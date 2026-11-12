@@ -19,6 +19,9 @@
 
 #include "platform.h"
 #include "second_screen.h"
+#if defined(__ANDROID__)
+#include "second_screen_assets.h"
+#endif
 
 namespace nx {
 
@@ -556,6 +559,9 @@ void game::after_init() {
     setenv("NX_HUD_KEEP_ALPHA", "1", 0);
 #endif
     const LoadedModule* m = module_at(find_symbol("nnMain"));
+#if defined(__ANDROID__)
+    p5r::companion::start_asset_extraction(plat::data_root());
+#endif
     if (m && (g_interval_setter = hook_function(m->base + 0x1048ee0, interval_setter_hook))) {
         g_main_base = m->base;
         if (std::getenv("NX_P5R_CULL_CHECK") && !(g_cull_job = hook_function(m->base + 0xab0f50, cull_job_hook)))
