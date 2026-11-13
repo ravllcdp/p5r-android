@@ -2,6 +2,10 @@ package io.github.p5rrecomp;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.content.ClipData;
 import android.content.Context;
 import android.content.DialogInterface;
@@ -300,9 +304,59 @@ public class Launcher extends Activity {
         return have;
     }
 
+    static final String NOTIF_CHANNEL = "p5r_settings";
+    static final int    NOTIF_ID      = 42;
+    static final String EXTRA_SETTINGS = "settings";
+
+    // True when the game is fully configured and ready to launch without the config screen.
+    boolean isReadyToPlay() {
+        if (!hasAccess()) return false;
+        if (gameUri() != null) return gameReadable() && hasKeys() && prepared();
+        return hasData() && wrongBuild() == null;
+    }
+
+    // Post (or update) the persistent "⚙ Ajustes" notification shown while the game runs.
+    void postSettingsNotification() {
+        NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+        if (nm == null) return;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel ch = new NotificationChannel(
+                    NOTIF_CHANNEL, "Persona 5 Royal",
+                    NotificationManager.IMPORTANCE_LOW);
+            ch.setShowBadge(false);
+            nm.createNotificationChannel(ch);
+        }
+        Intent si = new Intent(this, Launcher.class)
+                .putExtra(EXTRA_SETTINGS, true)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        int flags = android.app.PendingIntent.FLAG_UPDATE_CURRENT;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) flags |= PendingIntent.FLAG_IMMUTABLE;
+        PendingIntent pi = PendingIntent.getActivity(this, 0, si, flags);
+        Notification.Builder b = new Notification.Builder(this, NOTIF_CHANNEL)
+                .setSmallIcon(android.R.drawable.ic_menu_preferences)
+                .setContentTitle("Persona 5 Royal")
+                .setContentText(t("En ejecución — toca para abrir ajustes", "Running — tap to open settings"))
+                .setContentIntent(pi)
+                .setAutoCancel(false);
+        nm.notify(NOTIF_ID, b.build());
+    }
+
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
+        // If the game is ready and this isn't a "settings" launch from the notification,
+        // skip the config screen and go straight to the game.
+        boolean fromSettings = getIntent() != null && getIntent().getBooleanExtra(EXTRA_SETTINGS, false);
+        if (!fromSettings && isReadyToPlay()) {
+            load();
+            boolean ok = gameUri() == null || openGameForRuntime();
+            if (ok) {
+                postSettingsNotification();
+                startActivity(new Intent(this, android.app.NativeActivity.class));
+                finish();
+                return;
+            }
+        }
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
         // The game's texts and subtitles (runtime language.h): its own language names, as a console lists them.
         options.add(new Option("language", "Idioma de textos y subtítulos", "Text and subtitle language",
@@ -607,7 +661,6 @@ public class Launcher extends Activity {
                     else if (!prepared()) prepare();
                     else if (openGameForRuntime()) {
                         save();
-                        startService(new Intent(Launcher.this, SecondScreenService.class));
                         startActivity(new Intent(Launcher.this, android.app.NativeActivity.class));
                     } else {
                         tell(t("No se pudo abrir el juego", "The game could not be opened"), gameName());
@@ -623,7 +676,6 @@ public class Launcher extends Activity {
                     return;
                 }
                 save();
-                startService(new Intent(Launcher.this, SecondScreenService.class));
                 startActivity(new Intent(Launcher.this, android.app.NativeActivity.class));
             }
         });

@@ -18,10 +18,6 @@
 #include <nx/runtime.h>
 
 #include "platform.h"
-#include "second_screen.h"
-#if defined(__ANDROID__)
-#include "second_screen_assets.h"
-#endif
 
 namespace nx {
 
@@ -128,7 +124,7 @@ bool auto_fps() {
 
 bool g_scene = false;       // scan_tasks: the title or a cutscene is running, and no battle
 bool g_field_scene = false; // scan_tasks: a scripted field scene (EventSkip, no event_proc, no battle): steps only
-bool g_battle = false;      // scan_tasks: a battle task is active (read by second_screen::update)
+bool g_battle = false;      // scan_tasks: a battle task is active
 
 // The lowest target: in scenes NX_P5R_SCENE_FPS (10), in field scenes a third of the cap, elsewhere NX_P5R_MIN_FPS
 // (30); the number in the data folder's
@@ -351,9 +347,6 @@ void frame_origin() {
 
 void interval_setter_hook(CPU& c) {
     scan_tasks();
-    // Feed the second-screen companion every 6 frames (~5 Hz at 30 fps, ~10 Hz at 60 fps).
-    static int ss_tick = 0;
-    if (++ss_tick >= 6) { ss_tick = 0; p5r::second_screen::update(g_main_base, g_battle); }
     const uint64_t period = game_clock();
     frame_origin();
     const int now = target_fps();
@@ -559,9 +552,6 @@ void game::after_init() {
     setenv("NX_HUD_KEEP_ALPHA", "1", 0);
 #endif
     const LoadedModule* m = module_at(find_symbol("nnMain"));
-#if defined(__ANDROID__)
-    p5r::companion::start_asset_extraction(plat::data_root());
-#endif
     if (m && (g_interval_setter = hook_function(m->base + 0x1048ee0, interval_setter_hook))) {
         g_main_base = m->base;
         if (std::getenv("NX_P5R_CULL_CHECK") && !(g_cull_job = hook_function(m->base + 0xab0f50, cull_job_hook)))

@@ -11,6 +11,7 @@
 
     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="35" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
     <!-- Vulkan 1.1: the mid-range GPUs the port targets (Adreno 610, PowerVR BXM) have nothing newer. -->
@@ -65,11 +66,7 @@
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density">
             <meta-data android:name="android.app.lib_name" android:value="p5r" />
         </activity>
-        <!-- Second-screen companion: shows HP/SP on the AYN Thor's Display #4 (FLAG_PRESENTATION). -->
-        <service
-            android:name=".SecondScreenService"
-            android:exported="false" />
-            <provider
+        <provider
             android:name=".LogProvider"
             android:authorities="io.github.p5rrecomp.logprovider"
             android:exported="false"
