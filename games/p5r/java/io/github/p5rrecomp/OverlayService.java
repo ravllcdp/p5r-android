@@ -176,17 +176,7 @@ public class OverlayService extends Service {
                 return handleEdgeTouch(ev);
             }
         };
-        edge.setBackgroundColor(Color.argb(120, 230, 0, 18)); // red hint
-
-        TextView arrow = new TextView(this);
-        arrow.setText("◄");
-        arrow.setTextColor(Color.WHITE);
-        arrow.setTextSize(18);
-        arrow.setTypeface(Typeface.DEFAULT_BOLD);
-        arrow.setGravity(Gravity.CENTER);
-        edge.addView(arrow, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT));
+        edge.setBackgroundColor(Color.TRANSPARENT);
 
         mEdgeView = edge;
         mWm.addView(mEdgeView, edgeParams());
