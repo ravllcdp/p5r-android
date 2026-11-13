@@ -945,12 +945,14 @@ public class Launcher extends Activity {
                             + "\"Mostrar sobre otras apps\". ¿Abrimos los ajustes del sistema para concederlo?",
                             "To show the settings panel while playing, the \"Display over other apps\" permission "
                             + "is needed. Open system settings to grant it?"))
-                    .setPositiveButton(t("Ir a ajustes", "Open settings"), (d, w) -> {
-                        try {
-                            startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                    Uri.parse("package:" + getPackageName())));
-                        } catch (Exception e) {
-                            startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION));
+                    .setPositiveButton(t("Ir a ajustes", "Open settings"), new DialogInterface.OnClickListener() {
+                        @Override public void onClick(DialogInterface d, int w) {
+                            try {
+                                startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                        Uri.parse("package:" + getPackageName())));
+                            } catch (Exception e) {
+                                startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION));
+                            }
                         }
                     })
                     .setNegativeButton(t("Ahora no", "Not now"), null)

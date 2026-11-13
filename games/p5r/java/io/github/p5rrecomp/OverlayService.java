@@ -255,7 +255,9 @@ public class OverlayService extends Service {
         closeBtn.setTextColor(Color.WHITE);
         closeBtn.setBackgroundColor(Color.TRANSPARENT);
         closeBtn.setTextSize(18);
-        closeBtn.setOnClickListener(v -> closePanel());
+        closeBtn.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { closePanel(); }
+        });
         header.addView(closeBtn);
         root.addView(header);
 
@@ -294,9 +296,11 @@ public class OverlayService extends Service {
             btn.setBackgroundColor(Color.argb(200, 50, 50, 50));
             btn.setTextSize(14);
             btn.setPadding(dp(10), dp(4), dp(10), dp(4));
-            btn.setOnClickListener(v -> {
-                o.pick = (o.pick + 1) % o.vals.length;
-                btn.setText(o.valLabels[o.pick]);
+            btn.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    o.pick = (o.pick + 1) % o.vals.length;
+                    btn.setText(o.valLabels[o.pick]);
+                }
             });
             mOptBtns.add(btn);
             row.addView(btn);
@@ -317,12 +321,14 @@ public class OverlayService extends Service {
         LinearLayout.LayoutParams saveLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(52));
         saveLp.setMargins(dp(16), dp(8), dp(16), dp(16));
-        saveBtn.setOnClickListener(v -> {
-            saveConfig();
-            android.widget.Toast.makeText(this,
-                    "Guardado. Reinicia el juego para aplicar.",
-                    android.widget.Toast.LENGTH_LONG).show();
-            closePanel();
+        saveBtn.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                saveConfig();
+                android.widget.Toast.makeText(OverlayService.this,
+                        "Guardado. Reinicia el juego para aplicar.",
+                        android.widget.Toast.LENGTH_LONG).show();
+                closePanel();
+            }
         });
         root.addView(saveBtn, saveLp);
 
