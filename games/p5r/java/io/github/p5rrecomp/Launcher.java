@@ -351,7 +351,7 @@ public class Launcher extends Activity {
             load();
             boolean ok = gameUri() == null || openGameForRuntime();
             if (ok) {
-                postSettingsNotification();
+                startOverlay();
                 startActivity(new Intent(this, android.app.NativeActivity.class));
                 finish();
                 return;
@@ -661,6 +661,7 @@ public class Launcher extends Activity {
                     else if (!prepared()) prepare();
                     else if (openGameForRuntime()) {
                         save();
+                        startOverlay();
                         startActivity(new Intent(Launcher.this, android.app.NativeActivity.class));
                     } else {
                         tell(t("No se pudo abrir el juego", "The game could not be opened"), gameName());
@@ -676,6 +677,7 @@ public class Launcher extends Activity {
                     return;
                 }
                 save();
+                startOverlay();
                 startActivity(new Intent(Launcher.this, android.app.NativeActivity.class));
             }
         });
@@ -928,6 +930,33 @@ public class Launcher extends Activity {
     }
 
     int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }
+
+    // ---- overlay service (in-game settings edge panel) -------------------------------------------------------
+
+    void startOverlay() {
+        if (Settings.canDrawOverlays(this)) {
+            startService(new Intent(this, OverlayService.class));
+        } else if (!prefs().getBoolean("overlay_asked", false)) {
+            prefs().edit().putBoolean("overlay_asked", true).apply();
+            new AlertDialog.Builder(this)
+                    .setTitle(t("Panel de ajustes en juego", "In-game settings panel"))
+                    .setMessage(t(
+                            "Para mostrar el panel de ajustes mientras juegas hace falta el permiso "
+                            + "\"Mostrar sobre otras apps\". ¿Abrimos los ajustes del sistema para concederlo?",
+                            "To show the settings panel while playing, the \"Display over other apps\" permission "
+                            + "is needed. Open system settings to grant it?"))
+                    .setPositiveButton(t("Ir a ajustes", "Open settings"), (d, w) -> {
+                        try {
+                            startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                    Uri.parse("package:" + getPackageName())));
+                        } catch (Exception e) {
+                            startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION));
+                        }
+                    })
+                    .setNegativeButton(t("Ahora no", "Not now"), null)
+                    .show();
+        }
+    }
 
     // ---- custom GPU driver ------------------------------------------------------------------------------------
     // <files>/gpu_driver/<name>.so and active.txt (its name): the runtime opens it with libadrenotools instead of the
