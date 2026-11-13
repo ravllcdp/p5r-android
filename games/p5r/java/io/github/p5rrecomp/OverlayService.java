@@ -176,7 +176,7 @@ public class OverlayService extends Service {
                 return handleEdgeTouch(ev);
             }
         };
-        edge.setBackgroundColor(Color.argb(60, 230, 0, 18)); // subtle red hint
+        edge.setBackgroundColor(Color.argb(120, 230, 0, 18)); // red hint
 
         TextView arrow = new TextView(this);
         arrow.setText("◄");

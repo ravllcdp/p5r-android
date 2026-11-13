@@ -347,7 +347,8 @@ public class Launcher extends Activity {
         // If the game is ready and this isn't a "settings" launch from the notification,
         // skip the config screen and go straight to the game.
         boolean fromSettings = getIntent() != null && getIntent().getBooleanExtra(EXTRA_SETTINGS, false);
-        if (!fromSettings && isReadyToPlay()) {
+        boolean overlayReady = Settings.canDrawOverlays(this) || prefs().getBoolean("overlay_asked", false);
+        if (!fromSettings && isReadyToPlay() && overlayReady) {
             load();
             boolean ok = gameUri() == null || openGameForRuntime();
             if (ok) {
@@ -415,9 +416,25 @@ public class Launcher extends Activity {
         build();
     }
 
+    boolean mAwaitingOverlay = false;
+
     @Override
     protected void onResume() {
         super.onResume();
+        if (mAwaitingOverlay) {
+            mAwaitingOverlay = false;
+            prefs().edit().putBoolean("overlay_asked", true).apply();
+            if (isReadyToPlay()) {
+                load();
+                boolean ok = gameUri() == null || openGameForRuntime();
+                if (ok) {
+                    startOverlay();
+                    startActivity(new Intent(this, android.app.NativeActivity.class));
+                    finish();
+                    return;
+                }
+            }
+        }
         refresh();
     }
 
@@ -639,6 +656,13 @@ public class Launcher extends Activity {
             }
         });
         root.addView(logsRow);
+
+        if (!Settings.canDrawOverlays(this)) {
+            addRow(root, t("Panel de ajustes en juego", "In-game settings panel"),
+                    t("Dar permiso", "Grant permission"), new View.OnClickListener() {
+                        @Override public void onClick(View v) { askOverlayPermission(); }
+                    });
+        }
 
         play = new Button(this);
         play.setTextSize(20);
@@ -936,27 +960,17 @@ public class Launcher extends Activity {
     void startOverlay() {
         if (Settings.canDrawOverlays(this)) {
             startService(new Intent(this, OverlayService.class));
-        } else if (!prefs().getBoolean("overlay_asked", false)) {
-            prefs().edit().putBoolean("overlay_asked", true).apply();
-            new AlertDialog.Builder(this)
-                    .setTitle(t("Panel de ajustes en juego", "In-game settings panel"))
-                    .setMessage(t(
-                            "Para mostrar el panel de ajustes mientras juegas hace falta el permiso "
-                            + "\"Mostrar sobre otras apps\". ¿Abrimos los ajustes del sistema para concederlo?",
-                            "To show the settings panel while playing, the \"Display over other apps\" permission "
-                            + "is needed. Open system settings to grant it?"))
-                    .setPositiveButton(t("Ir a ajustes", "Open settings"), new DialogInterface.OnClickListener() {
-                        @Override public void onClick(DialogInterface d, int w) {
-                            try {
-                                startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                        Uri.parse("package:" + getPackageName())));
-                            } catch (Exception e) {
-                                startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION));
-                            }
-                        }
-                    })
-                    .setNegativeButton(t("Ahora no", "Not now"), null)
-                    .show();
+        }
+    }
+
+    void askOverlayPermission() {
+        mAwaitingOverlay = true;
+        prefs().edit().putBoolean("overlay_asked", true).apply();
+        try {
+            startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:" + getPackageName())));
+        } catch (Exception e) {
+            startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION));
         }
     }
 
