@@ -34,6 +34,7 @@ std::unordered_map<std::string, uint64_t> g_exports;
 struct Thunk {
     std::string name;
     HleFn fn;
+    bool journal = false;  // an NVN call that makes or sets up an object (nvn_journal.cpp)
 };
 std::vector<Thunk> g_thunks;
 std::unordered_map<std::string, uint64_t> g_thunk_by_name;
@@ -158,7 +159,7 @@ uint64_t hle_address_or(const char* name, HleFn fallback) {
     if (g_thunks.size() == kThunkSize / 16) fatal("out of HLE thunks");
     HleFn fn = hle_lookup(name);
     uint64_t addr = kThunkBase + g_thunks.size() * 16;
-    g_thunks.push_back({name, fn ? fn : fallback});
+    g_thunks.push_back({name, fn ? fn : fallback, nvn::journal_wants(name)});
     g_thunk_by_name[name] = addr;
     return addr;
 }
@@ -261,7 +262,14 @@ void hle_invoke(CPU& c, size_t index) {
     t_missing_name = th.name.c_str();
     KThread* kt = self_thread();
     if (kt) kt->hle.store(t_missing_name, std::memory_order_relaxed);
-    th.fn(c);
+    if (th.journal) {
+        uint64_t args[8];
+        std::memcpy(args, c.x, sizeof args);
+        th.fn(c);
+        nvn::journal_note(th.name.c_str(), args, c.x[0]);
+    } else {
+        th.fn(c);
+    }
     t_missing_name = prev;
     if (kt) kt->hle.store(prev, std::memory_order_relaxed);
 }

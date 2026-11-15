@@ -127,6 +127,14 @@ std::vector<ThunkRecord> hle_thunks_export();
 bool hle_thunks_restore(const std::vector<ThunkRecord>& saved);
 HleFn nvn_trace_stub();
 
+// Quick resume, NVN side (nvn_journal.cpp): which calls are journaled, the journal, and building the host objects again.
+namespace nvn {
+bool journal_wants(const char* name);
+void journal_note(const char* name, const uint64_t* args, uint64_t result);
+std::vector<uint8_t> journal_export();
+bool journal_replay(CPU& c, const uint8_t* data, size_t size);
+}  // namespace nvn
+
 // Replaces the guest function at `addr` with fn, an HLE function. Returns an address that still runs the original
 // (call(c, it)), 0 when it cannot be hooked. Recompiled builds swap its entry in the function table (the calls through
 // call(): indirect ones); native execution patches its first instruction, so every call goes to fn (nce.cpp).

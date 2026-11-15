@@ -90,7 +90,8 @@ void kernel_set_counters(uint32_t next_handle, uint64_t next_thread_id, uint64_t
 std::shared_ptr<KThread> kernel_adopt_thread(const KThreadImage& im);
 void kernel_adopt_object(uint32_t handle, std::shared_ptr<KObject> o);
 void kernel_start_restored(KThread* t);  // on a new host thread
-void kernel_run_restored(KThread* t);    // on the calling thread (the main thread's)
+// `before` runs on the thread first, once its identity is set and before it resumes (the NVN objects are built there).
+void kernel_run_restored(KThread* t, void (*before)(KThread*, void*) = nullptr, void* arg = nullptr);    // on the calling thread (the main thread's)
 
 uint32_t handle_add(std::shared_ptr<KObject> o);
 std::shared_ptr<KObject> handle_get(uint32_t h);

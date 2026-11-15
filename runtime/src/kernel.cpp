@@ -444,7 +444,7 @@ void kernel_adopt_object(uint32_t handle, std::shared_ptr<KObject> o) {
 }
 
 #if NX_NCE
-static void restored_body(KThread* t) {
+static void restored_body(KThread* t, void (*before)(KThread*, void*) = nullptr, void* arg = nullptr) {
     t_self = t;
     t->host_tid = plat::current_thread_id();
     char name[16];
@@ -452,6 +452,7 @@ static void restored_body(KThread* t) {
     plat::set_thread_name(name);
     log("snap: thread %x (id %llu) resumes with %s", t->handle, (unsigned long long)t->id,
         (t->snap_code & 0x80000000u) ? "an svc" : (t->snap_code & 0x40000000u) ? "a hook" : "an HLE call");
+    if (before) before(t, arg);
     if (!t->loop_name.empty()) {
         // A runtime loop with no state of its own (the movie pump): it starts again with its registers from when it began.
         if (auto fn = snap::loop_function(t->loop_name)) fn(t->ctx);
@@ -469,13 +470,13 @@ void kernel_start_restored(KThread* t) {
     t->started = true;
     plat::start_thread(restored_main, t, 64ull << 20);
 }
-void kernel_run_restored(KThread* t) {
+void kernel_run_restored(KThread* t, void (*before)(KThread*, void*), void* arg) {
     t->started = true;
-    restored_body(t);
+    restored_body(t, before, arg);
 }
 #else
 void kernel_start_restored(KThread*) {}
-void kernel_run_restored(KThread*) {}
+void kernel_run_restored(KThread*, void (*)(KThread*, void*), void*) {}
 #endif
 
 static std::shared_ptr<KThread> new_thread(uint64_t entry, uint64_t arg, uint64_t sp, int prio, int core) {

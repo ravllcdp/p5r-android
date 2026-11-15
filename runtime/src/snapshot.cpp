@@ -535,6 +535,11 @@ static bool save_state(const std::string& path, const DumpStats& mem) {
         o.str(t.name);
         o.put<uint8_t>(uint8_t(t.kind));
     }
+    {
+        const std::vector<uint8_t> j = nvn::journal_export();
+        o.put<uint32_t>(uint32_t(j.size()));
+        o.raw(j.data(), j.size());
+    }
     log("snap: state: %u threads, %u events, %u sessions (%u of them stubs or objects made by another service), %u shared "
         "memories, %u transfer memories, %u objects not saved%s",
         threads, events, sessions, unknown_sessions, shared, transfers, other,
@@ -741,12 +746,34 @@ bool restore_and_run() {
         }
         log("snap: restore: %zu runtime function addresses back", thunks.size());
     }
+    std::vector<uint8_t> journal(in.get<uint32_t>());
+    if (in.ok && !journal.empty()) in.raw(journal.data(), journal.size());
+    if (!in.ok) {
+        log("snap: restore: the NVN journal is damaged. The process is half restored and cannot go on.");
+        plat::exit_process(1);
+    }
     const auto t1 = std::chrono::steady_clock::now();
     log("snap: restore: %u threads, %u events, %u sessions, %u shared, %u transfer memories in %lld ms; starting %zu threads and the main one",
         restored[0], restored[1], restored[2], restored[3], restored[4],
         (long long)std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count(), live.size());
-    for (auto& t : live) kernel_start_restored(t.get());
-    kernel_run_restored(main_thread.get());
+    struct Ctx {
+        std::vector<uint8_t>* journal;
+        std::vector<std::shared_ptr<KThread>>* live;
+    } ctx{&journal, &live};
+    kernel_run_restored(
+        main_thread.get(),
+        [](KThread* t, void* p) {
+            Ctx* x = static_cast<Ctx*>(p);
+            // The GPU objects first, on this thread (they call guest code), then the others may run.
+            CPU c = t->ctx;
+            c.x[31] -= 0x2000;
+            if (!nvn::journal_replay(c, x->journal->data(), x->journal->size())) {
+                log("snap: restore: the NVN journal does not read. The process is half restored and cannot go on.");
+                plat::exit_process(1);
+            }
+            for (auto& th : *x->live) kernel_start_restored(th.get());
+        },
+        &ctx);
     return true;
 }
 

@@ -28,8 +28,28 @@ uint64_t g_gpu_next = 0x100000000ull;  // NVN GPU addresses are 40-bit; keep 0 a
 
 }  // namespace
 
+static uint64_t g_gpu_forced = 0;  // quick resume: the address the next pool had when it was saved
+
+uint64_t gpu_next_get() {
+    std::lock_guard lk(g_gpu_lock);
+    return g_gpu_next;
+}
+void gpu_next_set(uint64_t v) {
+    std::lock_guard lk(g_gpu_lock);
+    g_gpu_next = v;
+}
+void gpu_force_next(uint64_t v) {
+    std::lock_guard lk(g_gpu_lock);
+    g_gpu_forced = v;
+}
+
 uint64_t gpu_alloc(uint64_t size) {
     std::lock_guard lk(g_gpu_lock);
+    if (g_gpu_forced) {
+        uint64_t a = g_gpu_forced;
+        g_gpu_forced = 0;
+        return a;
+    }
     uint64_t a = g_gpu_next;
     g_gpu_next = (a + size + 0x1FFFF) & ~0xFFFFull;  // 64 KiB aligned, a guard gap between pools
     return a;
