@@ -570,6 +570,7 @@ void DecoderGetOutputFormat(CPU& c) {
 // frames in, at ~15 fps until then). This guest thread drains every started codec every 2 ms and signals the event.
 void movie_pump_thread(CPU& c) {
     log("movie: pump thread running");
+    snap::register_loop("movie_pump", c);
     for (;;) {
         plat::sleep_ns(2'000'000);
         // Quick resume: this loop never goes back through nce_dispatch, so it parks here. A restored process starts
@@ -985,6 +986,7 @@ NX_HLE("movie::Decoder::GetLastError", DecoderGetLastError);
 NX_HLE("movie::Decoder::GetOutputBuffer (format)", DecoderGetOutputBufferWithFormat);
 NX_HLE("movie::Decoder::GetOutputBufferFormat", DecoderGetOutputBufferFormat);
 #if defined(__ANDROID__)
+static const bool g_reg_pump = (snap::register_loop_function("movie_pump", movie_pump_thread), true);
 NX_HLE("__movie_pump_thread", movie_pump_thread);
 #endif
 

@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <string>
 
 #include <nx/runtime.h>
 
@@ -42,6 +43,12 @@ struct WaitScope {
 // Noted on every call a guest thread makes into the runtime (nce_dispatch): what it is about to do, for a restored
 // thread to do it again.
 void note_call(CPU& c, uint32_t code, int depth);
+
+// A runtime function that runs as a thread's whole life and keeps no state (the movie pump) says so on entry, with its
+// own name, and is registered by that name: a restored process starts it again from its saved entry registers.
+void register_loop(const char* name, CPU& c);
+void register_loop_function(const char* name, void (*fn)(CPU&));
+void (*loop_function(const std::string& name))(CPU&);
 
 // Events that live in the runtime (vsync, audio frame): a restored handle must point at this process's, not a copy.
 void register_event(const char* name, std::shared_ptr<EventState> state);

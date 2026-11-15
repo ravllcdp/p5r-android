@@ -276,6 +276,28 @@ std::map<std::string, std::shared_ptr<EventState>>& event_registry() {
 
 }  // namespace
 
+namespace {
+std::map<std::string, void (*)(CPU&)>& loop_registry() {
+    static std::map<std::string, void (*)(CPU&)> m;
+    return m;
+}
+}  // namespace
+
+void register_loop_function(const char* name, void (*fn)(CPU&)) { loop_registry()[name] = fn; }
+
+void (*loop_function(const std::string& name))(CPU&) {
+    auto it = loop_registry().find(name);
+    return it == loop_registry().end() ? nullptr : it->second;
+}
+
+void register_loop(const char* name, CPU& c) {
+    KThread* t = kstate::t_self;
+    if (!t) return;
+    t->loop_name = name;
+    if (!t->loop_ctx) t->loop_ctx = new CPU(c);
+    else *t->loop_ctx = c;
+}
+
 void register_event(const char* name, std::shared_ptr<EventState> state) { event_registry()[name] = std::move(state); }
 
 void note_call(CPU& c, uint32_t code, int depth) {
@@ -370,7 +392,7 @@ static bool save_state(const std::string& path, const DumpStats& mem) {
             threads++;
             const bool live = t->started && !t->exited;
             const bool is_main = t->entry == 0;
-            const bool hle_loop = t->entry - kThunkBase < kThunkSize;  // an HLE function started as a guest thread
+            const bool hle_loop = !t->loop_name.empty() && t->loop_ctx;
             if (live && !hle_loop && t->snap_depth != (is_main ? 2 : 1)) {
                 log("snap: thread %x (%s) is %d calls deep inside the runtime, cannot be saved here", handle,
                     is_main ? "main" : "worker", t->snap_depth);
@@ -385,16 +407,10 @@ static bool save_state(const std::string& path, const DumpStats& mem) {
             ob.put<int32_t>(t->core);
             ob.put<uint8_t>(t->started);
             ob.put<uint8_t>(t->exited);
-            if (hle_loop) {
-                ob.put<uint32_t>(0xFFFFFFFFu);  // restart from its entry with what it started with
-                ob.put<uint64_t>(t->init_arg);
-                ob.put<uint64_t>(t->init_sp);
-                for (int i = 2; i < 8; i++) ob.put<uint64_t>(0);
-            } else {
-                ob.put<uint32_t>(t->snap_code);
-                for (int i = 0; i < 8; i++) ob.put<uint64_t>(t->snap_args[i]);
-            }
-            ob.raw(&t->ctx, sizeof(CPU));
+            ob.put<uint32_t>(hle_loop ? 0xFFFFFFFEu : t->snap_code);
+            if (hle_loop) ob.str(t->loop_name);
+            for (int i = 0; i < 8; i++) ob.put<uint64_t>(hle_loop ? 0 : t->snap_args[i]);
+            ob.raw(hle_loop ? static_cast<const void*>(t->loop_ctx) : static_cast<const void*>(&t->ctx), sizeof(CPU));
         } else if (auto e = std::dynamic_pointer_cast<KEvent>(obj)) {
             events++;
             ob.put<uint32_t>(kObjEvent);
@@ -580,6 +596,7 @@ bool restore_and_run() {
             im.core = in.get<int32_t>();
             const bool started = in.get<uint8_t>(), exited = in.get<uint8_t>();
             im.code = in.get<uint32_t>();
+            if (im.code == 0xFFFFFFFEu) im.loop_name = in.str();
             for (int k = 0; k < 8; k++) im.args[k] = in.get<uint64_t>();
             in.raw(&im.ctx, sizeof(CPU));
             auto t = kernel_adopt_thread(im);

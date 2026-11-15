@@ -43,7 +43,10 @@ struct KThread : KObject {
     std::atomic<int> snap_wait{0};
     uint32_t snap_code = 0;
     uint64_t snap_args[8] = {};
-    uint64_t init_arg = 0, init_sp = 0;  // what the thread started with (a thread whose entry is an HLE loop restarts from these)
+    // A thread that sits in a runtime loop with no state of its own (the movie pump): its registers on entering the loop and
+    // the loop's name, so a restored process starts the loop again.
+    std::string loop_name;
+    CPU* loop_ctx = nullptr;
     int snap_depth = 0;  // nested nce_enter frames on its host thread when it made that call
     bool signaled() const override { return exited; }
 };
@@ -75,6 +78,7 @@ struct KThreadImage {
     uint32_t code = 0;
     uint64_t args[8] = {};
     CPU ctx{};
+    std::string loop_name;
 };
 struct KernelExport {
     uint32_t next_handle = 0;

@@ -422,6 +422,7 @@ std::shared_ptr<KThread> kernel_adopt_thread(const KThreadImage& im) {
     t->ctx = im.ctx;
     t->handle = im.handle;
     t->snap_code = im.code;
+    t->loop_name = im.loop_name;
     for (int i = 0; i < 8; i++) t->snap_args[i] = im.args[i];
     std::lock_guard lk(g_k);
     g_handles[im.handle] = t;
@@ -444,11 +445,10 @@ static void restored_body(KThread* t) {
     plat::set_thread_name(name);
     log("snap: thread %x (id %llu) resumes with %s", t->handle, (unsigned long long)t->id,
         (t->snap_code & 0x80000000u) ? "an svc" : (t->snap_code & 0x40000000u) ? "a hook" : "an HLE call");
-    if (t->snap_code == 0xFFFFFFFFu) {
-        // An HLE loop of the runtime started as a guest thread (the movie pump): it keeps no state, so it starts again.
-        t->ctx.x[0] = t->snap_args[0];
-        t->ctx.x[31] = t->snap_args[1];
-        call(t->ctx, t->entry);
+    if (!t->loop_name.empty()) {
+        // A runtime loop with no state of its own (the movie pump): it starts again with its registers from when it began.
+        if (auto fn = snap::loop_function(t->loop_name)) fn(t->ctx);
+        else log("snap: no loop called '%s' in this build", t->loop_name.c_str());
     } else {
         nce::resume(t->ctx, t->snap_code, t->snap_args);
     }
@@ -476,8 +476,6 @@ static std::shared_ptr<KThread> new_thread(uint64_t entry, uint64_t arg, uint64_
     t->self = t;
     t->id = g_next_thread_id++;
     t->entry = entry;
-    t->init_arg = arg;
-    t->init_sp = sp;
     t->prio = prio;
     t->core = core;
     t->tls = kernel_alloc(0x1000);  // one TLS page per thread (0x200 used)
