@@ -904,21 +904,57 @@ bool restore_and_run() {
     return true;
 }
 
+static std::atomic<bool> g_save_requested{false};
+static std::atomic<bool> g_paused{false};
+
+void set_paused(bool paused) {
+    g_paused.store(paused);
+    if (paused) g_save_requested.store(true);
+}
+
 void start_watcher() {
     std::thread([] {
+        using clock = std::chrono::steady_clock;
         const std::string trigger = plat::data_root() + "/snap.freeze";
+        int auto_seconds = 300;
+        if (FILE* f = std::fopen((plat::data_root() + "/snap.auto").c_str(), "r")) {
+            int v = 0;
+            if (std::fscanf(f, "%d", &v) == 1 && v >= 0) auto_seconds = v;
+            std::fclose(f);
+        }
+        log("snap: automatic saving every %d s (0 = off) and on pause", auto_seconds);
+        auto last = clock::now();
+        auto save = [&](const char* why) {
+            log("snap: saving (%s)", why);
+            const bool ok = capture_safely(plat::internal_dir() + "/snap");
+            if (!ok) log("snap: could not save a state");
+            // A moment that cannot be saved (a thread deep in the runtime): try again soon, not after a full period.
+            last = ok ? clock::now() : clock::now() - std::chrono::seconds(std::max(0, auto_seconds - 30));
+            return ok;
+        };
         for (;;) {
             std::this_thread::sleep_for(std::chrono::milliseconds(400));
-            const std::string dump_trigger = plat::data_root() + "/snap.dump";
             const std::string shot_trigger = plat::data_root() + "/snap.shot";
             if (access(shot_trigger.c_str(), F_OK) == 0) {
                 std::remove(shot_trigger.c_str());
                 nvn::gpu_debug_shot();
                 continue;
             }
+            const std::string dump_trigger = plat::data_root() + "/snap.dump";
             if (access(dump_trigger.c_str(), F_OK) == 0) {
                 std::remove(dump_trigger.c_str());
-                if (!capture_safely(plat::internal_dir() + "/snap")) log("snap: could not save a state");
+                save("asked");
+                continue;
+            }
+            const auto now = clock::now();
+            const bool recent = now - last < std::chrono::seconds(20);
+            if (g_save_requested.load() && !recent) {
+                g_save_requested.store(false);
+                save("the app paused");
+                continue;
+            }
+            if (auto_seconds > 0 && !g_paused.load() && now - last >= std::chrono::seconds(auto_seconds)) {
+                save("timer");
                 continue;
             }
             if (access(trigger.c_str(), F_OK) != 0) continue;

@@ -45,6 +45,7 @@
 #include <nx/runtime.h>
 
 #include "kernel.h"
+#include "snapshot.h"
 #include "platform.h"
 #include "platform_android.h"
 #if NX_NCE
@@ -567,9 +568,11 @@ void on_cmd(android_app* app, int32_t cmd) {
             break;
         case APP_CMD_PAUSE:  // home, app switcher, screen off: the game holds (no window), so does its sound
             audio_pause(true);
+            nx::snap::set_paused(true);  // the moment to save a state: the game is still, and may not come back
             break;
         case APP_CMD_RESUME:
             audio_pause(false);
+            nx::snap::set_paused(false);
             break;
     }
 }

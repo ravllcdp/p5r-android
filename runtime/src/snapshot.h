@@ -73,6 +73,11 @@ bool restore_requested();
 // if the state does not fit this process; boot then goes on normally.
 bool restore_and_run();
 
+// Automatic saving (a thread started with the watcher): every few minutes (the first line of snap.auto in the data root:
+// seconds, 0 = never, default 300) and whenever the app is paused (home, app switcher, screen off), when the game holds
+// still anyway. set_paused is called from the platform's lifecycle events.
+void set_paused(bool paused);
+
 // Debug trigger: a file named snap.freeze in the data root (its text: how many ms to stay frozen, default 3000)
 // freezes, holds and thaws, and logs how long each step took. Replaced by the overlay button in a later step.
 void start_watcher();

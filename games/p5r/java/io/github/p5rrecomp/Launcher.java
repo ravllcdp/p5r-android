@@ -341,6 +341,77 @@ public class Launcher extends Activity {
         nm.notify(NOTIF_ID, b.build());
     }
 
+    // ---- quick resume: the state the game saved on its own (runtime snapshot.cpp), offered when the game opens ----
+
+    private File savedStateDir() {
+        File dir = new File(getFilesDir(), "snap"), old = new File(getFilesDir(), "snap.old");
+        String[] names = {"state.bin", "mem.bin", "gpu.bin"};
+        for (File d : new File[]{dir, old}) {
+            boolean whole = d.isDirectory();
+            for (String n : names) whole = whole && new File(d, n).isFile();
+            if (whole) return d;
+        }
+        return null;
+    }
+
+    /** The time of the saved state, or 0 when there is none this version of the app can restore. */
+    private long savedStateTime() {
+        File d = savedStateDir();
+        if (d == null) return 0;
+        try {
+            long updated = getPackageManager().getPackageInfo(getPackageName(), 0).lastUpdateTime;
+            long when = new File(d, "state.bin").lastModified();
+            return when > updated ? when : 0;  // a state from before an update does not fit the new build
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    private File restoreFlag() {
+        return new File(android.os.Environment.getExternalStorageDirectory(), DATA + "/snap.restore");
+    }
+
+    private void startGameActivity(boolean resume, boolean finishAfter) {
+        File flag = restoreFlag();
+        try {
+            if (resume) {
+                //noinspection ResultOfMethodCallIgnored
+                flag.createNewFile();
+            } else if (flag.exists()) {
+                //noinspection ResultOfMethodCallIgnored
+                flag.delete();
+            }
+        } catch (Exception ignored) { }
+        startActivity(new Intent(this, android.app.NativeActivity.class));
+        if (finishAfter) finish();
+    }
+
+    /** Opens the game; when a saved state is there, asks first whether to go on from it. */
+    private void launchGame(final boolean finishAfter) {
+        long when = savedStateTime();
+        if (when == 0) {
+            startGameActivity(false, finishAfter);
+            return;
+        }
+        CharSequence ago = android.text.format.DateUtils.getRelativeTimeSpanString(
+                when, System.currentTimeMillis(), android.text.format.DateUtils.MINUTE_IN_MILLIS);
+        new android.app.AlertDialog.Builder(this)
+                .setTitle(t("Partida guardada", "Saved game"))
+                .setMessage(t("Hay un guardado automático de ", "There is an automatic save from ") + ago + ".")
+                .setCancelable(false)
+                .setPositiveButton(t("Continuar", "Continue"), new android.content.DialogInterface.OnClickListener() {
+                    @Override public void onClick(android.content.DialogInterface d, int w) {
+                        startGameActivity(true, finishAfter);
+                    }
+                })
+                .setNegativeButton(t("Empezar de nuevo", "Start over"), new android.content.DialogInterface.OnClickListener() {
+                    @Override public void onClick(android.content.DialogInterface d, int w) {
+                        startGameActivity(false, finishAfter);
+                    }
+                })
+                .show();
+    }
+
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -353,8 +424,7 @@ public class Launcher extends Activity {
             boolean ok = gameUri() == null || openGameForRuntime();
             if (ok) {
                 startOverlay();
-                startActivity(new Intent(this, android.app.NativeActivity.class));
-                finish();
+                launchGame(true);
                 return;
             }
         }
@@ -429,8 +499,7 @@ public class Launcher extends Activity {
                 boolean ok = gameUri() == null || openGameForRuntime();
                 if (ok) {
                     startOverlay();
-                    startActivity(new Intent(this, android.app.NativeActivity.class));
-                    finish();
+                    launchGame(true);
                     return;
                 }
             }
@@ -686,7 +755,7 @@ public class Launcher extends Activity {
                     else if (openGameForRuntime()) {
                         save();
                         startOverlay();
-                        startActivity(new Intent(Launcher.this, android.app.NativeActivity.class));
+                        launchGame(false);
                     } else {
                         tell(t("No se pudo abrir el juego", "The game could not be opened"), gameName());
                     }
@@ -702,7 +771,7 @@ public class Launcher extends Activity {
                 }
                 save();
                 startOverlay();
-                startActivity(new Intent(Launcher.this, android.app.NativeActivity.class));
+                launchGame(false);
             }
         });
 
