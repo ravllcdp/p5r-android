@@ -12,6 +12,10 @@
 
 #include <nx/runtime.h>
 
+namespace nx {
+struct EventState;  // kernel.h
+}
+
 namespace nx::snap {
 
 extern std::atomic<bool> g_freeze;
