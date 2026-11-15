@@ -444,7 +444,14 @@ static void restored_body(KThread* t) {
     plat::set_thread_name(name);
     log("snap: thread %x (id %llu) resumes with %s", t->handle, (unsigned long long)t->id,
         (t->snap_code & 0x80000000u) ? "an svc" : (t->snap_code & 0x40000000u) ? "a hook" : "an HLE call");
-    nce::resume(t->ctx, t->snap_code, t->snap_args);
+    if (t->snap_code == 0xFFFFFFFFu) {
+        // An HLE loop of the runtime started as a guest thread (the movie pump): it keeps no state, so it starts again.
+        t->ctx.x[0] = t->snap_args[0];
+        t->ctx.x[31] = t->snap_args[1];
+        call(t->ctx, t->entry);
+    } else {
+        nce::resume(t->ctx, t->snap_code, t->snap_args);
+    }
     log("snap: thread %x (id %llu) returned from its entry", t->handle, (unsigned long long)t->id);
     std::lock_guard lk(g_k);
     t->exited = true;
@@ -469,6 +476,8 @@ static std::shared_ptr<KThread> new_thread(uint64_t entry, uint64_t arg, uint64_
     t->self = t;
     t->id = g_next_thread_id++;
     t->entry = entry;
+    t->init_arg = arg;
+    t->init_sp = sp;
     t->prio = prio;
     t->core = core;
     t->tls = kernel_alloc(0x1000);  // one TLS page per thread (0x200 used)

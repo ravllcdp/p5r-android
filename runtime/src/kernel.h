@@ -43,6 +43,7 @@ struct KThread : KObject {
     std::atomic<int> snap_wait{0};
     uint32_t snap_code = 0;
     uint64_t snap_args[8] = {};
+    uint64_t init_arg = 0, init_sp = 0;  // what the thread started with (a thread whose entry is an HLE loop restarts from these)
     int snap_depth = 0;  // nested nce_enter frames on its host thread when it made that call
     bool signaled() const override { return exited; }
 };

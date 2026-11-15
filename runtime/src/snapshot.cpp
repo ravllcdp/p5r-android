@@ -1,6 +1,7 @@
 #include "snapshot.h"
 
 #include <fcntl.h>
+#include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -143,6 +144,48 @@ bool write_all(int fd, const void* p, size_t n) {
 
 }  // namespace
 
+// Every writable mapping inside the guest windows: the memory that is committed, whether or not it has been touched.
+static bool collect_rw(DumpStats& st) {
+    const std::vector<Window> wins = {{kModuleBase, kModuleBase + 0x40000000ull, "modules"},
+                                      {kHeapBase, kHeapBase + kHeapMax, "heap"},
+                                      {kAliasBase, kAliasBase + kAliasSize, "alias"},
+                                      {kStackBase, kStackBase + kStackSize, "stack"},
+                                      {kKernelBase, kKernelBase + kKernelSize, "kernel"}};
+    FILE* maps = std::fopen("/proc/self/maps", "r");
+    if (!maps) return false;
+    char line[512];
+    while (std::fgets(line, sizeof line, maps)) {
+        uint64_t lo = 0, hi = 0;
+        char perms[8] = {};
+        if (std::sscanf(line, "%" SCNx64 "-%" SCNx64 " %7s", &lo, &hi, perms) != 3) continue;
+        if (perms[0] != 'r' || perms[1] != 'w') continue;
+        for (const Window& w : wins) {
+            const uint64_t a = lo > w.lo ? lo : w.lo, b = hi < w.hi ? hi : w.hi;
+            if (a < b) st.rw.emplace_back(a, b);
+        }
+    }
+    std::fclose(maps);
+    return true;
+}
+
+// A run of guest memory to the file in pieces, pushing the written pages out of the cache as it goes: a gigabyte of
+// dirty pages at once is memory pressure, and Android answers that by killing the app.
+static bool write_run(int fd, uint64_t addr, uint64_t len, uint64_t& unsynced) {
+    constexpr uint64_t kPiece = 16ull << 20, kSyncEvery = 64ull << 20;
+    uint64_t done = 0;
+    while (done < len) {
+        const uint64_t n = len - done < kPiece ? len - done : kPiece;
+        if (!write_all(fd, reinterpret_cast<const void*>(addr + done), n)) return false;
+        done += n, unsynced += n;
+        if (unsynced >= kSyncEvery) {
+            ::fdatasync(fd);
+            ::posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
+            unsynced = 0;
+        }
+    }
+    return true;
+}
+
 // The guest's memory to a file: every page of the guest windows that the kernel says is in RAM or in swap (untouched
 // pages are zero and are left out). Format: "P5RSNAP0", the layout (u64 count, then the window bases), then runs of
 // {u64 addr, u64 length, bytes} and a final {0, 0}. Guest threads must be frozen.
@@ -172,6 +215,7 @@ static bool dump_memory(const std::string& path, DumpStats& st) {
     ok = ok && write_all(fd, &n, 8);
     for (const Window& w : wins) ok = ok && write_all(fd, &w.lo, 8);
     const uint64_t kPage = 4096;
+    uint64_t unsynced = 0;
     std::vector<uint64_t> entries;
     char line[512];
     while (ok && std::fgets(line, sizeof line, maps)) {
@@ -183,7 +227,6 @@ static bool dump_memory(const std::string& path, DumpStats& st) {
             const uint64_t a = lo > w.lo ? lo : w.lo, b = hi < w.hi ? hi : w.hi;
             if (a >= b) continue;
             st.regions++;
-            st.rw.emplace_back(a, b);
             const uint64_t pages = (b - a) / kPage;
             entries.resize(pages);
             if (::pread(pm, entries.data(), pages * 8, off_t((a / kPage) * 8)) != ssize_t(pages * 8)) {
@@ -204,8 +247,7 @@ static bool dump_memory(const std::string& path, DumpStats& st) {
                     j++;
                 }
                 const uint64_t addr = a + i * kPage, len = (j - i) * kPage;
-                ok = write_all(fd, &addr, 8) && write_all(fd, &len, 8) &&
-                     write_all(fd, reinterpret_cast<const void*>(addr), len);
+                ok = write_all(fd, &addr, 8) && write_all(fd, &len, 8) && write_run(fd, addr, len, unsynced);
                 st.bytes += len;
                 i = j;
             }
@@ -216,6 +258,7 @@ static bool dump_memory(const std::string& path, DumpStats& st) {
     std::fclose(maps);
     ::close(pm);
     if (ok) ok = ::fsync(fd) == 0;
+    ::posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
     ::close(fd);
     if (ok) ok = ::rename(tmp.c_str(), path.c_str()) == 0;
     else ::unlink(tmp.c_str());
@@ -315,7 +358,7 @@ static bool save_state(const std::string& path, const DumpStats& mem) {
     }
 
     bool clean = true;
-    uint32_t threads = 0, events = 0, sessions = 0, shared = 0, transfers = 0, other = 0;
+    uint32_t threads = 0, events = 0, sessions = 0, shared = 0, transfers = 0, other = 0, unknown_sessions = 0;
     std::string other_names;
     std::string body;
     uint32_t count = 0;
@@ -327,7 +370,8 @@ static bool save_state(const std::string& path, const DumpStats& mem) {
             threads++;
             const bool live = t->started && !t->exited;
             const bool is_main = t->entry == 0;
-            if (live && t->snap_depth != (is_main ? 2 : 1)) {
+            const bool hle_loop = t->entry - kThunkBase < kThunkSize;  // an HLE function started as a guest thread
+            if (live && !hle_loop && t->snap_depth != (is_main ? 2 : 1)) {
                 log("snap: thread %x (%s) is %d calls deep inside the runtime, cannot be saved here", handle,
                     is_main ? "main" : "worker", t->snap_depth);
                 clean = false;
@@ -341,8 +385,15 @@ static bool save_state(const std::string& path, const DumpStats& mem) {
             ob.put<int32_t>(t->core);
             ob.put<uint8_t>(t->started);
             ob.put<uint8_t>(t->exited);
-            ob.put<uint32_t>(t->snap_code);
-            for (int i = 0; i < 8; i++) ob.put<uint64_t>(t->snap_args[i]);
+            if (hle_loop) {
+                ob.put<uint32_t>(0xFFFFFFFFu);  // restart from its entry with what it started with
+                ob.put<uint64_t>(t->init_arg);
+                ob.put<uint64_t>(t->init_sp);
+                for (int i = 2; i < 8; i++) ob.put<uint64_t>(0);
+            } else {
+                ob.put<uint32_t>(t->snap_code);
+                for (int i = 0; i < 8; i++) ob.put<uint64_t>(t->snap_args[i]);
+            }
             ob.raw(&t->ctx, sizeof(CPU));
         } else if (auto e = std::dynamic_pointer_cast<KEvent>(obj)) {
             events++;
@@ -372,10 +423,7 @@ static bool save_state(const std::string& path, const DumpStats& mem) {
                 ob.put<uint32_t>(handle);
                 ob.put<uint8_t>(domain);
                 ob.str(name);
-                if (!ipc_service_known(name)) {
-                    log("snap: session %x is to '%s', which is an object made by another service (not saved yet)", handle, name.c_str());
-                    other++;
-                }
+                if (!ipc_service_known(name)) unknown_sessions++;
             } else {
                 other++;
                 other_names += " " + std::to_string(handle);
@@ -386,8 +434,10 @@ static bool save_state(const std::string& path, const DumpStats& mem) {
     }
     o.put<uint32_t>(count);
     o.raw(ob.b.data(), ob.b.size());
-    log("snap: state: %u threads, %u events, %u sessions, %u shared memories, %u transfer memories, %u objects not saved%s",
-        threads, events, sessions, shared, transfers, other, other_names.empty() ? "" : (" (handles" + other_names + ")").c_str());
+    log("snap: state: %u threads, %u events, %u sessions (%u of them stubs or objects made by another service), %u shared "
+        "memories, %u transfer memories, %u objects not saved%s",
+        threads, events, sessions, unknown_sessions, shared, transfers, other,
+        other_names.empty() ? "" : (" (handles" + other_names + ")").c_str());
     if (!clean) return false;
     const std::string tmp = path + ".tmp";
     FILE* f = std::fopen(tmp.c_str(), "wb");
@@ -409,8 +459,9 @@ static bool capture(const std::string& dir) {
         const auto t1 = std::chrono::steady_clock::now();
         const uint64_t e0 = wake_epoch();
         DumpStats st;
-        bool ok = dump_memory(dir + "/mem.bin", st);
-        ok = ok && save_state(dir + "/state.bin", st);
+        // The cheap checks first: a state that cannot be saved must not cost a gigabyte of writes.
+        bool ok = collect_rw(st) && save_state(dir + "/state.bin", st);
+        ok = ok && dump_memory(dir + "/mem.bin", st);
         const uint64_t e1 = wake_epoch();
         const auto t2 = std::chrono::steady_clock::now();
         thaw();
