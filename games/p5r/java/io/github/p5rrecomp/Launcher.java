@@ -396,10 +396,11 @@ public class Launcher extends Activity {
         CharSequence ago = android.text.format.DateUtils.getRelativeTimeSpanString(
                 when, System.currentTimeMillis(), android.text.format.DateUtils.MINUTE_IN_MILLIS);
         new android.app.AlertDialog.Builder(this)
-                .setTitle(t("Partida guardada", "Saved game"))
-                .setMessage(t("Hay un guardado automático de ", "There is an automatic save from ") + ago + ".")
+                .setTitle(t("¿Continuar la partida guardada?", "Continue your saved game?"))
+                .setMessage(Lang.f("Guardado %s. Si empiezas de nuevo, el próximo guardado automático sustituirá este.",
+                        "Saved %s. If you start over, the next automatic save will replace this one.", ago.toString()))
                 .setCancelable(false)
-                .setPositiveButton(t("Continuar", "Continue"), new android.content.DialogInterface.OnClickListener() {
+                .setPositiveButton(t("Continuar partida", "Continue game"), new android.content.DialogInterface.OnClickListener() {
                     @Override public void onClick(android.content.DialogInterface d, int w) {
                         startGameActivity(true, finishAfter);
                     }

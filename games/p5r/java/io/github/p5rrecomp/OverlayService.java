@@ -298,10 +298,11 @@ public class OverlayService extends Service {
             //noinspection ResultOfMethodCallIgnored
             trigger.createNewFile();
         } catch (Exception e) {
-            showBanner("No se pudo guardar. Revisa el permiso de archivos de la app.", 2);
+            showBanner("No se pudo guardar la partida. La app no puede escribir en tus archivos. "
+                    + "Revisa su permiso de archivos en los ajustes de Android.", 2);
             return;
         }
-        showBanner("Guardando…", 0);
+        showBanner("Guardando partida…", 0);
         final Runnable[] poll = new Runnable[1];
         poll[0] = new Runnable() {
             @Override public void run() {
@@ -309,7 +310,8 @@ public class OverlayService extends Service {
                 if (f.isFile() && f.lastModified() >= asked - 1000) {
                     showBanner("Partida guardada", 1);
                 } else if (System.currentTimeMillis() - asked > 25000) {
-                    showBanner("No se pudo guardar. Prueba otra vez en unos segundos.", 2);
+                    showBanner("No se pudo guardar la partida. El juego estaba ocupado. "
+                            + "Prueba otra vez en unos segundos.", 2);
                 } else {
                     mHandler.postDelayed(poll[0], 300);
                 }
@@ -338,9 +340,10 @@ public class OverlayService extends Service {
         int ink = kind == 2 ? RED : Color.WHITE;
         TextView t = new TextView(this);
         t.setText(text);
-        t.setAllCaps(true);
+        if (kind != 2) t.setAllCaps(true);  // the long problem text stays in sentence case, easier to read
         t.setTextColor(ink);
-        t.setTextSize(20);
+        t.setTextSize(kind == 2 ? 15 : 20);
+        t.setMaxWidth(dp(360));
         t.setLetterSpacing(0.06f);
         t.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD_ITALIC));
         t.setPadding(dp(30), dp(10), dp(30), dp(12));
@@ -360,12 +363,12 @@ public class OverlayService extends Service {
         mBannerView = t;
         mWm.addView(t, p);
         t.animate().alpha(1f).translationX(0f).setDuration(160).start();
-        if (kind != 0) mHandler.postDelayed(mHideBanner, kind == 1 ? 2200 : 4000);
+        if (kind != 0) mHandler.postDelayed(mHideBanner, kind == 1 ? 2200 : 6000);
     }
 
     private String lastSaveLine() {
         File f = stateFile();
-        if (!f.isFile()) return "Aún no hay guardado. Toca el icono de guardar para crear uno.";
+        if (!f.isFile()) return "Aún no hay partida guardada. Toca el icono de guardar para crear una.";
         CharSequence ago = android.text.format.DateUtils.getRelativeTimeSpanString(
                 f.lastModified(), System.currentTimeMillis(), android.text.format.DateUtils.MINUTE_IN_MILLIS);
         return "Último guardado: " + ago;
