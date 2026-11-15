@@ -816,6 +816,12 @@ void start_watcher() {
         for (;;) {
             std::this_thread::sleep_for(std::chrono::milliseconds(400));
             const std::string dump_trigger = plat::data_root() + "/snap.dump";
+            const std::string shot_trigger = plat::data_root() + "/snap.shot";
+            if (access(shot_trigger.c_str(), F_OK) == 0) {
+                std::remove(shot_trigger.c_str());
+                nvn::gpu_debug_shot();
+                continue;
+            }
             if (access(dump_trigger.c_str(), F_OK) == 0) {
                 std::remove(dump_trigger.c_str());
                 if (!capture(plat::internal_dir() + "/snap")) log("snap: could not save a state");

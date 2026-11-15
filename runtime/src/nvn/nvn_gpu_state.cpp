@@ -290,4 +290,30 @@ bool gpu_state_restore(CPU&, const std::function<bool(void*, size_t)>& in) {
     return true;
 }
 
+// Debug (snap.shot in the data root): the window's textures and the screen-sized targets, to <data root>/frames/*.ppm.
+void gpu_debug_shot() {
+    static uint64_t shot = 0;
+    std::vector<uint64_t> list;
+    {
+        std::shared_lock lk(objects_lock());
+        for (auto& [guest, obj] : objects()) {
+            if (auto* w = dynamic_cast<Window*>(obj.get()))
+                for (uint64_t t : w->textures) list.push_back(t);
+        }
+        for (auto& [guest, obj] : objects()) {
+            auto* t = dynamic_cast<Texture*>(obj.get());
+            if (t && t->image && (t->width == 1920 || t->width == 1280) && (t->height == 1080 || t->height == 720) &&
+                list.size() < 14)
+                list.push_back(guest);
+        }
+    }
+    ++shot;
+    const uint64_t serial = worker_run([list] {
+        for (uint64_t t : list) debug_dump_add(t);
+        debug_dump_textures(1000000 + 0);
+    });
+    if (serial) worker_wait(serial);
+    log("snap: shot %llu: %zu textures asked", (unsigned long long)shot, list.size());
+}
+
 }  // namespace nx::nvn

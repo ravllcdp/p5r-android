@@ -134,6 +134,7 @@ bool journal_wants(const char* name);
 void journal_note(const char* name, const uint64_t* args, uint64_t result);
 std::vector<uint8_t> journal_export();
 bool journal_replay(CPU& c, const uint8_t* data, size_t size);
+void gpu_debug_shot();
 bool gpu_state_save(const std::function<bool(const void*, size_t)>& out);   // nvn_gpu_state.cpp
 bool gpu_state_restore(CPU& c, const std::function<bool(void*, size_t)>& in);
 }  // namespace nvn
