@@ -397,102 +397,152 @@ public class OverlayService extends Service {
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackground(new SlantDrawable(BLACK, Color.TRANSPARENT, 0, dp(36), true));
-        root.setPadding(dp(40), 0, 0, 0);
+        root.setBackground(new MenuBackDrawable(dp(40), dp(14)));
+        root.setPadding(dp(46), 0, 0, 0);
 
-        // Header: red slab, bold italic title, black close badge
+        // Header: red slab with a white offset, title tilted with a hard black shadow, close badge
         FrameLayout header = new FrameLayout(this);
-        header.setBackground(new SlantDrawable(RED, Color.TRANSPARENT, 0, dp(18), false));
-        header.setPadding(dp(18), dp(10), dp(14), dp(10));
+        header.setBackground(new ShadowSlantDrawable(RED, Color.TRANSPARENT, 0, Color.WHITE, dp(4), dp(22)));
+        header.setPadding(dp(26), dp(10), dp(18), dp(14));
+        header.setClipChildren(false);
 
         TextView title = new TextView(this);
         title.setText("Ajustes");
         title.setAllCaps(true);
-        title.setRotation(-3f);
         title.setTextColor(Color.WHITE);
-        title.setTextSize(30);
+        title.setTextSize(34);
         title.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD_ITALIC));
-        title.setLetterSpacing(0.08f);
+        title.setLetterSpacing(0.05f);
+        title.setShadowLayer(0.01f, dp(3), dp(3), BLACK);
+        title.setRotation(-3f);
         header.addView(title, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.CENTER_VERTICAL | Gravity.START));
 
         TextView close = slantButton("X", BLACK, Color.rgb(60, 60, 60), Color.WHITE, 16, dp(42), dp(34));
+        close.setContentDescription("Cerrar ajustes");
         close.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { closePanel(); }
         });
         header.addView(close, new FrameLayout.LayoutParams(dp(42), dp(34), Gravity.CENTER_VERTICAL | Gravity.END));
-        root.addView(header, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        LinearLayout.LayoutParams headerLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        headerLp.setMargins(0, 0, dp(4), 0);
+        root.addView(header, headerLp);
 
-        // A white slash under the red slab, as in the game's menus
-        View slash = new View(this);
-        slash.setBackground(new SlantDrawable(Color.WHITE, Color.TRANSPARENT, 0, dp(18), false));
-        LinearLayout.LayoutParams slashLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(5));
-        slashLp.setMargins(dp(24), dp(3), 0, 0);
-        root.addView(slash, slashLp);
-
+        // Info plate: last save, white with red ink, like the game's hint plates
         TextView last = new TextView(this);
         last.setText(lastSaveLine());
-        last.setTextColor(Color.WHITE);
-        last.setTextSize(13);
+        last.setAllCaps(true);
+        last.setTextColor(BLACK);
+        last.setTextSize(12);
         last.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD_ITALIC));
-        last.setPadding(dp(18), dp(10), dp(16), dp(0));
-        root.addView(last);
+        last.setPadding(dp(24), dp(5), dp(24), dp(7));
+        last.setBackground(new ShadowSlantDrawable(Color.WHITE, Color.TRANSPARENT, 0, RED, dp(3), dp(10)));
+        LinearLayout.LayoutParams lastLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lastLp.setMargins(dp(8), dp(16), dp(16), 0);
+        root.addView(last, lastLp);
 
-        // Note
         TextView note = new TextView(this);
         note.setText("Los cambios se aplican al reiniciar el juego.");
-        note.setTextColor(Color.rgb(200, 200, 200));
+        note.setTextColor(Color.rgb(190, 190, 190));
         note.setTextSize(12);
         note.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.ITALIC));
-        note.setPadding(dp(18), dp(8), dp(16), dp(2));
+        note.setPadding(dp(14), dp(10), dp(16), dp(4));
         root.addView(note);
 
-        // Options
+        // Options: one slanted strip each; the whole strip is the button
         ScrollView scroll = new ScrollView(this);
+        scroll.setVerticalScrollBarEnabled(false);
         LinearLayout optList = new LinearLayout(this);
         optList.setOrientation(LinearLayout.VERTICAL);
-        optList.setPadding(dp(18), dp(2), dp(16), dp(4));
+        optList.setPadding(dp(6), dp(6), dp(12), dp(8));
 
+        final android.content.res.ColorStateList labelInk = new android.content.res.ColorStateList(
+                new int[][]{{android.R.attr.state_pressed}, {}}, new int[]{RED, Color.WHITE});
+        final android.content.res.ColorStateList valueInk = new android.content.res.ColorStateList(
+                new int[][]{{android.R.attr.state_pressed}, {}}, new int[]{Color.WHITE, Color.WHITE});
+        final List<View> rows = new ArrayList<>();
+
+        int idx = 0;
         for (final Opt o : mOpts) {
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(Gravity.CENTER_VERTICAL);
-            row.setPadding(0, dp(7), 0, dp(7));
+            row.setClickable(true);
+            row.setPadding(dp(26), dp(4), dp(22), dp(8));
+            StateListDrawable rowBg = new StateListDrawable();
+            rowBg.addState(new int[]{android.R.attr.state_pressed},
+                    new ShadowSlantDrawable(Color.WHITE, Color.TRANSPARENT, 0, RED, dp(4), dp(16)));
+            rowBg.addState(new int[]{},
+                    new ShadowSlantDrawable(BLACK, Color.WHITE, dp(2), RED, dp(4), dp(16)));
+            row.setBackground(rowBg);
+            row.setRotation(-1.2f);
+            row.setContentDescription(o.label);
 
             TextView lbl = new TextView(this);
             lbl.setText(o.label);
             lbl.setAllCaps(true);
-            lbl.setTextColor(Color.WHITE);
+            lbl.setTextColor(labelInk);
             lbl.setTextSize(17);
             lbl.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD_ITALIC));
-            row.addView(lbl, new LinearLayout.LayoutParams(0,
-                    LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+            lbl.setDuplicateParentState(true);
+            row.addView(lbl, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
 
-            final TextView btn = slantButton(o.valLabels[o.pick], RED, DARK_RED, Color.WHITE, 14, dp(128), dp(38));
-            btn.setOnClickListener(new View.OnClickListener() {
+            final TextView val = new TextView(this);
+            val.setText(o.valLabels[o.pick]);
+            val.setAllCaps(true);
+            val.setTextColor(valueInk);
+            val.setTextSize(14);
+            val.setGravity(Gravity.CENTER);
+            val.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD_ITALIC));
+            val.setDuplicateParentState(true);
+            StateListDrawable valBg = new StateListDrawable();
+            valBg.addState(new int[]{android.R.attr.state_pressed},
+                    new ShadowSlantDrawable(BLACK, Color.WHITE, dp(1), Color.TRANSPARENT, 0, dp(8)));
+            valBg.addState(new int[]{},
+                    new ShadowSlantDrawable(RED, Color.TRANSPARENT, 0, Color.TRANSPARENT, 0, dp(8)));
+            val.setBackground(valBg);
+            row.addView(val, new LinearLayout.LayoutParams(dp(124), dp(34)));
+
+            row.setOnClickListener(new View.OnClickListener() {
                 @Override public void onClick(View v) {
                     o.pick = (o.pick + 1) % o.vals.length;
-                    btn.setText(o.valLabels[o.pick]);
+                    val.setText(o.valLabels[o.pick]);
                 }
             });
-            row.addView(btn, new LinearLayout.LayoutParams(dp(128), dp(38)));
-            optList.addView(row);
-
-            View sep = new View(this);
-            sep.setBackground(new DiagonalLineDrawable(Color.argb(120, 255, 255, 255)));
-            optList.addView(sep, new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, dp(6)));
+            LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, dp(56));
+            rowLp.setMargins((idx % 2) * dp(10), dp(4), 0, dp(6));
+            optList.addView(row, rowLp);
+            row.setAlpha(0f);
+            row.setTranslationX(dp(70));
+            rows.add(row);
+            idx++;
         }
 
         scroll.addView(optList);
         root.addView(scroll, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
 
-        // Save button: white slab with red text, inverts on press
-        TextView save = slantButton("Aplicar ajustes", Color.WHITE, Color.rgb(200, 200, 200), RED, 18, 0, dp(52));
+        // Apply: white slab, red ink, red offset; inverts on press
+        TextView save = new TextView(this);
+        save.setText("Aplicar ajustes");
+        save.setAllCaps(true);
+        save.setGravity(Gravity.CENTER);
+        save.setTextSize(20);
+        save.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD_ITALIC));
+        save.setLetterSpacing(0.05f);
+        save.setTextColor(new android.content.res.ColorStateList(
+                new int[][]{{android.R.attr.state_pressed}, {}}, new int[]{Color.WHITE, RED}));
+        save.setClickable(true);
+        StateListDrawable saveBg = new StateListDrawable();
+        saveBg.addState(new int[]{android.R.attr.state_pressed},
+                new ShadowSlantDrawable(RED, Color.WHITE, dp(2), Color.WHITE, dp(4), dp(16)));
+        saveBg.addState(new int[]{},
+                new ShadowSlantDrawable(Color.WHITE, Color.TRANSPARENT, 0, RED, dp(4), dp(16)));
+        save.setBackground(saveBg);
         save.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
                 saveConfig();
@@ -503,12 +553,19 @@ public class OverlayService extends Service {
             }
         });
         LinearLayout.LayoutParams saveLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(52));
-        saveLp.setMargins(dp(18), dp(8), dp(16), dp(16));
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(58));
+        saveLp.setMargins(dp(4), dp(6), dp(16), dp(18));
         root.addView(save, saveLp);
 
         mPanelRoot = root;
         mWm.addView(mPanelRoot, panelParams());
+
+        // Entrance: the panel slides in, then the strips one after another
+        root.setTranslationX(dp(400));
+        root.animate().translationX(0f).setDuration(200).start();
+        for (int i = 0; i < rows.size(); i++) {
+            rows.get(i).animate().alpha(1f).translationX(0f).setStartDelay(140 + i * 45L).setDuration(180).start();
+        }
     }
 
     private void closePanel() {
@@ -589,6 +646,126 @@ public class OverlayService extends Service {
 
         @Override public void setAlpha(int a) { mFill.setAlpha(a); mStroke.setAlpha(a); }
         @Override public void setColorFilter(ColorFilter f) { mFill.setColorFilter(f); mStroke.setColorFilter(f); }
+        @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
+    }
+
+    /** The panel's back: black with a halftone fading down, a dark red star, and the left edge cut on a red and white diagonal. */
+    private static final class MenuBackDrawable extends Drawable {
+        private final Paint mFill = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint mDots = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint mStar = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint mRed = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint mWhite = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Path mPath = new Path();
+        private final int mSkew, mGrid;
+
+        MenuBackDrawable(int skew, int grid) {
+            mSkew = skew; mGrid = grid;
+            mFill.setColor(BLACK);
+            mDots.setColor(Color.rgb(38, 38, 38));
+            mDots.setStrokeCap(Paint.Cap.ROUND);
+            mStar.setColor(Color.rgb(46, 0, 5));
+            mRed.setColor(RED);
+            mWhite.setColor(Color.WHITE);
+        }
+
+        @Override public void draw(Canvas c) {
+            float w = getBounds().width(), h = getBounds().height(), s = mSkew;
+            mPath.reset();
+            mPath.moveTo(s, 0); mPath.lineTo(w, 0); mPath.lineTo(w, h); mPath.lineTo(0, h);
+            mPath.close();
+            c.save();
+            c.clipPath(mPath);
+            c.drawPaint(mFill);
+
+            // halftone: bigger dots at the top, none at the bottom
+            for (int band = 0; band < 4; band++) {
+                float y0 = h * band / 5f, y1 = h * (band + 1) / 5f;
+                mDots.setStrokeWidth(mGrid * (0.62f - band * 0.14f));
+                float[] pts = new float[(int) (w / mGrid + 2) * (int) ((y1 - y0) / mGrid + 2) * 2];
+                int n = 0;
+                int row = 0;
+                for (float y = y0; y < y1; y += mGrid, row++) {
+                    for (float x = (row % 2) * mGrid / 2f; x < w; x += mGrid) {
+                        pts[n++] = x; pts[n++] = y;
+                    }
+                }
+                c.drawPoints(pts, 0, n, mDots);
+            }
+
+            // star watermark, low right
+            float cx = w * 0.62f, cy = h * 0.8f, ro = Math.min(w, h) * 0.62f, ri = ro * 0.42f;
+            Path star = new Path();
+            for (int i = 0; i < 10; i++) {
+                double a = -Math.PI / 2 + i * Math.PI / 5 + 0.2;
+                float r = (i % 2 == 0) ? ro : ri;
+                float x = cx + (float) (Math.cos(a) * r), y = cy + (float) (Math.sin(a) * r);
+                if (i == 0) star.moveTo(x, y); else star.lineTo(x, y);
+            }
+            star.close();
+            c.drawPath(star, mStar);
+            c.restore();
+
+            // the cut: a wide red stripe and a thin white one along the diagonal
+            Path red = new Path();
+            red.moveTo(s, 0); red.lineTo(s + s * 0.42f, 0); red.lineTo(s * 0.42f, h); red.lineTo(0, h);
+            red.close();
+            c.drawPath(red, mRed);
+            Path white = new Path();
+            white.moveTo(s + s * 0.5f, 0); white.lineTo(s + s * 0.6f, 0); white.lineTo(s * 0.6f, h); white.lineTo(s * 0.5f, h);
+            white.close();
+            c.drawPath(white, mWhite);
+        }
+
+        @Override public void setAlpha(int a) { }
+        @Override public void setColorFilter(ColorFilter f) { }
+        @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
+    }
+
+    /** A parallelogram with a hard offset copy behind it (the game's plates). The shape leaves room inside its bounds for the offset. */
+    private static final class ShadowSlantDrawable extends Drawable {
+        private final Paint mFill = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint mStroke = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint mShadow = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Path mPath = new Path();
+        private final int mSkew, mOff;
+        private final boolean mHasStroke, mHasShadow;
+
+        ShadowSlantDrawable(int fill, int stroke, int strokeW, int shadow, int off, int skew) {
+            mFill.setColor(fill);
+            mFill.setStyle(Paint.Style.FILL);
+            mHasStroke = strokeW > 0 && Color.alpha(stroke) > 0;
+            mStroke.setColor(stroke);
+            mStroke.setStyle(Paint.Style.STROKE);
+            mStroke.setStrokeWidth(strokeW);
+            mStroke.setStrokeJoin(Paint.Join.MITER);
+            mHasShadow = off > 0 && Color.alpha(shadow) > 0;
+            mShadow.setColor(shadow);
+            mShadow.setStyle(Paint.Style.FILL);
+            mSkew = skew; mOff = off;
+        }
+
+        private void shape(float w, float h, float dx, float dy) {
+            float s = Math.min(mSkew, w / 3f);
+            mPath.reset();
+            mPath.moveTo(dx + s, dy); mPath.lineTo(dx + w, dy);
+            mPath.lineTo(dx + w - s, dy + h); mPath.lineTo(dx, dy + h);
+            mPath.close();
+        }
+
+        @Override public void draw(Canvas c) {
+            float w = getBounds().width() - mOff, h = getBounds().height() - mOff;
+            if (mHasShadow) {
+                shape(w, h, mOff, mOff);
+                c.drawPath(mPath, mShadow);
+            }
+            shape(w, h, 0, 0);
+            c.drawPath(mPath, mFill);
+            if (mHasStroke) c.drawPath(mPath, mStroke);
+        }
+
+        @Override public void setAlpha(int a) { mFill.setAlpha(a); mStroke.setAlpha(a); mShadow.setAlpha(a); }
+        @Override public void setColorFilter(ColorFilter f) { mFill.setColorFilter(f); mStroke.setColorFilter(f); mShadow.setColorFilter(f); }
         @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
     }
 
