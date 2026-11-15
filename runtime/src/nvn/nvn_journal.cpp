@@ -83,6 +83,7 @@ struct Entry {
     int blob_arg = -1;
     std::vector<uint8_t> blob;
     uint64_t gpu = 0;  // memory pools: the GPU address they were given
+    std::vector<uint64_t> window_textures;  // windows: the textures the builder listed (an array the game may have reused)
     bool registration = false;
 };
 
@@ -124,6 +125,9 @@ void journal_note(const char* name, const uint64_t* args, uint64_t /*result*/) {
     }
     if (!std::strcmp(name, "nvnMemoryPoolInitialize")) {
         if (auto* p = get<MemoryPool>(args[0])) e.gpu = p->gpu;
+    }
+    if (!std::strcmp(name, "nvnWindowInitialize")) {
+        if (auto* w = get<Window>(args[0])) e.window_textures = w->textures;
     }
     std::lock_guard lk(g_lock);
     const uint64_t obj = args[0];
@@ -170,6 +174,9 @@ std::vector<uint8_t> journal_export() {
         put(&e.gpu, 8);
         const uint8_t reg = e.registration;
         put(&reg, 1);
+        const uint32_t wn = uint32_t(e.window_textures.size());
+        put(&wn, 4);
+        put(e.window_textures.data(), wn * 8);
     }
     return out;
 }
@@ -198,6 +205,10 @@ bool journal_replay(CPU& c, const uint8_t* p, size_t size) {
         p += bn;
         if (!get_(&e.gpu, 8) || !get_(&reg, 1)) return false;
         e.registration = reg;
+        uint32_t wn = 0;
+        if (!get_(&wn, 4) || size_t(end - p) < size_t(wn) * 8) return false;
+        e.window_textures.resize(wn);
+        if (wn) get_(e.window_textures.data(), size_t(wn) * 8);
     }
     const uint64_t buf = kernel_alloc(0x11000);
     size_t done = 0, failed = 0;
@@ -218,6 +229,8 @@ bool journal_replay(CPU& c, const uint8_t* p, size_t size) {
             if (e.gpu) gpu_force_next(e.gpu);
             for (int k = 0; k < 8; k++) c.x[k] = a[k];
             fn(c);
+            if (!e.window_textures.empty() && e.name == "nvnWindowInitialize")
+                if (auto* w = get<Window>(a[0])) w->textures = e.window_textures;
             done++;
         }
     }
