@@ -52,7 +52,20 @@ struct IpcCtx {
     Buffer out_buf(size_t n) const { return n < b.size() && b[n].addr ? b[n] : (n < c.size() ? c[n] : Buffer{}); }
 };
 
+// How a service object came to be: the command of its parent that returned it (quick resume repeats it in a new process).
+struct ServiceOrigin {
+    bool set = false;
+    bool tipc = false;
+    uint64_t event = 0;  // one per request: the objects a request returned share it, and so share one replay
+    std::shared_ptr<Service> parent;
+    uint32_t cmd = 0;
+    std::vector<uint8_t> in;
+    std::vector<std::shared_ptr<Service>> in_services;
+    size_t index = 0;
+};
+
 struct Service : std::enable_shared_from_this<Service> {
+    ServiceOrigin origin;
     std::string name;
     explicit Service(std::string n) : name(std::move(n)) {}
     virtual ~Service() = default;

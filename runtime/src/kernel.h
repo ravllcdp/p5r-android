@@ -114,6 +114,8 @@ void init_tls_block(uint64_t block);
 bool ipc_session_info(const KObject& o, std::string& name, bool& domain);
 std::shared_ptr<KObject> ipc_make_session(const std::string& name, bool domain);
 bool ipc_service_known(const std::string& name);
+std::vector<uint8_t> ipc_graph_export(const std::vector<std::pair<uint32_t, std::shared_ptr<KObject>>>& sessions);
+bool ipc_graph_import(CPU& c, const uint8_t* data, size_t size);
 uint32_t ipc_connect(const char* port, uint64_t* out_handle);
 uint32_t ipc_request(CPU& c, uint32_t handle, uint64_t buf, uint64_t size);
 uint32_t map_shared_memory(KSharedMemory& s, uint64_t addr, uint64_t size);

@@ -87,6 +87,183 @@ std::shared_ptr<KObject> ipc_make_session(const std::string& name, bool domain) 
 
 bool ipc_service_known(const std::string& name) { return name == "sm:" || factories().count(name) != 0; }
 
+// ---- quick resume: the sessions and the objects behind them ---------------------------------------------------------
+
+namespace {
+struct GOut {
+    std::vector<uint8_t> b;
+    template <typename T>
+    void put(T v) { b.insert(b.end(), reinterpret_cast<uint8_t*>(&v), reinterpret_cast<uint8_t*>(&v) + sizeof v); }
+    void raw(const void* p, size_t n) { b.insert(b.end(), static_cast<const uint8_t*>(p), static_cast<const uint8_t*>(p) + n); }
+    void str(const std::string& s) { put<uint32_t>(uint32_t(s.size())); raw(s.data(), s.size()); }
+};
+struct GIn {
+    const uint8_t* p;
+    const uint8_t* end;
+    bool ok = true;
+    void raw(void* d, size_t n) {
+        if (size_t(end - p) < n) { ok = false; std::memset(d, 0, n); return; }
+        std::memcpy(d, p, n);
+        p += n;
+    }
+    template <typename T>
+    T get() { T v{}; raw(&v, sizeof v); return v; }
+    std::string str() {
+        uint32_t n = get<uint32_t>();
+        if (!ok || size_t(end - p) < n) { ok = false; return {}; }
+        std::string s(reinterpret_cast<const char*>(p), n);
+        p += n;
+        return s;
+    }
+};
+}  // namespace
+
+std::vector<uint8_t> ipc_graph_export(const std::vector<std::pair<uint32_t, std::shared_ptr<KObject>>>& sessions) {
+    GOut o;
+    std::vector<std::shared_ptr<Service>> order;
+    std::map<Service*, int32_t> index;
+    std::function<int32_t(const std::shared_ptr<Service>&)> idx = [&](const std::shared_ptr<Service>& s) -> int32_t {
+        if (!s) return -1;
+        auto it = index.find(s.get());
+        if (it != index.end()) return it->second;
+        if (s->origin.set) {
+            idx(s->origin.parent);
+            for (auto& in : s->origin.in_services) idx(in);
+        }
+        const int32_t k = int32_t(order.size());
+        order.push_back(s);
+        index[s.get()] = k;
+        return k;
+    };
+    std::vector<std::shared_ptr<KSession>> list;
+    for (auto& [h, obj] : sessions) {
+        auto ks = std::dynamic_pointer_cast<KSession>(obj);
+        list.push_back(ks);
+        if (!ks) continue;
+        idx(ks->svc);
+        for (auto& [id, sv] : ks->dom->objects) idx(sv);
+    }
+    o.put<uint32_t>(uint32_t(order.size()));
+    for (auto& s : order) {
+        const ServiceOrigin& g = s->origin;
+        o.put<uint8_t>(g.set);
+        o.str(s->name);
+        if (!g.set) continue;
+        o.put<uint8_t>(g.tipc);
+        o.put<uint64_t>(g.event);
+        o.put<int32_t>(index[g.parent.get()]);
+        o.put<uint32_t>(g.cmd);
+        o.put<uint32_t>(uint32_t(g.in.size()));
+        o.raw(g.in.data(), g.in.size());
+        o.put<uint32_t>(uint32_t(g.in_services.size()));
+        for (auto& in : g.in_services) o.put<int32_t>(in ? index[in.get()] : -1);
+        o.put<uint32_t>(uint32_t(g.index));
+    }
+    o.put<uint32_t>(uint32_t(sessions.size()));
+    std::map<DomainState*, uint32_t> groups;
+    for (size_t i = 0; i < sessions.size(); i++) {
+        auto& ks = list[i];
+        o.put<uint32_t>(sessions[i].first);
+        if (!ks || !ks->svc) { o.put<int32_t>(-1); continue; }
+        o.put<int32_t>(index[ks->svc.get()]);
+        o.put<uint8_t>(ks->domain);
+        auto [it, fresh] = groups.emplace(ks->dom.get(), uint32_t(groups.size()));
+        o.put<uint32_t>(it->second);
+        o.put<uint8_t>(fresh);
+        if (fresh) {
+            o.put<uint32_t>(ks->dom->next_object);
+            o.put<uint32_t>(uint32_t(ks->dom->objects.size()));
+            for (auto& [id, sv] : ks->dom->objects) {
+                o.put<uint32_t>(id);
+                o.put<int32_t>(index[sv.get()]);
+            }
+        }
+    }
+    return o.b;
+}
+
+bool ipc_graph_import(CPU& c, const uint8_t* data, size_t size) {
+    GIn in{data, data + size};
+    const uint32_t n = in.get<uint32_t>();
+    std::vector<std::shared_ptr<Service>> svcs;
+    std::map<uint64_t, std::vector<std::shared_ptr<Service>>> replayed;  // event -> what its request returned
+    int failed = 0;
+    for (uint32_t k = 0; k < n && in.ok; k++) {
+        const bool has_origin = in.get<uint8_t>();
+        const std::string name = in.str();
+        if (!has_origin) {
+            svcs.push_back(name == "sm:" ? std::make_shared<SmService>() : make_service(name));
+            continue;
+        }
+        const bool tipc = in.get<uint8_t>();
+        const uint64_t event = in.get<uint64_t>();
+        const int32_t parent = in.get<int32_t>();
+        const uint32_t cmd = in.get<uint32_t>();
+        std::vector<uint8_t> raw(in.get<uint32_t>());
+        if (!raw.empty()) in.raw(raw.data(), raw.size());
+        std::vector<std::shared_ptr<Service>> ins(in.get<uint32_t>());
+        for (auto& s : ins) {
+            const int32_t j = in.get<int32_t>();
+            s = j >= 0 && size_t(j) < svcs.size() ? svcs[j] : nullptr;
+        }
+        const uint32_t index = in.get<uint32_t>();
+        if (!in.ok || parent < 0 || size_t(parent) >= svcs.size()) { in.ok = false; break; }
+        auto& got = replayed[event];
+        if (got.empty()) {
+            IpcCtx ctx;
+            ctx.cpu = &c;
+            ctx.cmd = cmd;
+            ctx.type = tipc ? 16 + cmd : 4;
+            ctx.in = raw.data();
+            ctx.in_size = raw.size();
+            ctx.in_services = ins;
+            svcs[parent]->handle(ctx);
+            got = ctx.out_objects;
+            for (size_t i = 0; i < got.size(); i++) {
+                got[i]->origin = {true, tipc, event, svcs[parent], cmd, raw, ins, i};
+            }
+        }
+        if (index < got.size()) {
+            svcs.push_back(got[index]);
+        } else {
+            failed++;
+            auto stub = std::make_shared<Service>(name);
+            svcs.push_back(stub);
+        }
+    }
+    const uint32_t ns = in.get<uint32_t>();
+    std::map<uint32_t, std::shared_ptr<DomainState>> groups;
+    for (uint32_t k = 0; k < ns && in.ok; k++) {
+        const uint32_t handle = in.get<uint32_t>();
+        const int32_t j = in.get<int32_t>();
+        if (j < 0) continue;
+        const bool domain = in.get<uint8_t>();
+        const uint32_t group = in.get<uint32_t>();
+        const bool fresh = in.get<uint8_t>();
+        std::shared_ptr<DomainState> dom;
+        if (fresh) {
+            dom = std::make_shared<DomainState>();
+            groups[group] = dom;
+            dom->next_object = in.get<uint32_t>();
+            const uint32_t cnt = in.get<uint32_t>();
+            for (uint32_t i = 0; i < cnt && in.ok; i++) {
+                const uint32_t id = in.get<uint32_t>();
+                const int32_t sj = in.get<int32_t>();
+                if (sj >= 0 && size_t(sj) < svcs.size()) dom->objects[id] = svcs[sj];
+            }
+        } else {
+            dom = groups[group];
+        }
+        auto ks = std::dynamic_pointer_cast<KSession>(handle_get(handle));
+        if (!ks || size_t(j) >= svcs.size() || !dom) continue;
+        ks->svc = svcs[j];
+        ks->domain = domain;
+        ks->dom = dom;
+    }
+    log("snap: restore: %zu service objects rebuilt, %d that did not come back", svcs.size(), failed);
+    return in.ok;
+}
+
 uint32_t ipc_connect(const char* port, uint64_t* out_handle) {
     std::string p = port;
     log("ConnectToNamedPort(%s)", p.c_str());
@@ -97,6 +274,25 @@ uint32_t ipc_connect(const char* port, uint64_t* out_handle) {
 }
 
 // ---- messages -------------------------------------------------------------------------------------------------
+
+// Notes on every object a request returned which request it was (ServiceOrigin).
+static void note_origin(const std::shared_ptr<Service>& parent, const IpcCtx& ctx, bool tipc) {
+    static uint64_t g_event = 0;
+    if (ctx.out_objects.empty()) return;
+    const uint64_t ev = ++g_event;
+    for (size_t i = 0; i < ctx.out_objects.size(); i++) {
+        Service& o = *ctx.out_objects[i];
+        if (o.origin.set || &o == parent.get()) continue;
+        o.origin.set = true;
+        o.origin.tipc = tipc;
+        o.origin.event = ev;
+        o.origin.parent = parent;
+        o.origin.cmd = ctx.cmd;
+        o.origin.in.assign(ctx.in, ctx.in + ctx.in_size);
+        o.origin.in_services = ctx.in_services;
+        o.origin.index = i;
+    }
+}
 
 static uint32_t new_session_handle(std::shared_ptr<Service> svc) {
     auto s = std::make_shared<KSession>();
@@ -171,6 +367,7 @@ uint32_t ipc_request(CPU& c, uint32_t handle, uint64_t buf, uint64_t) {
         ctx.in_size = ndata * 4;
         if (g_trace) log("ipc: tipc %s cmd %u", sess->svc->name.c_str(), ctx.cmd);
         uint32_t rc = sess->svc->handle(ctx);
+        note_origin(sess->svc, ctx, true);
         for (auto& o : ctx.out_objects) ctx.out_move.push_back(new_session_handle(o));
         std::memset(w, 0, 0x100);
         bool has_special = !ctx.out_copy.empty() || !ctx.out_move.empty();
@@ -262,6 +459,7 @@ uint32_t ipc_request(CPU& c, uint32_t handle, uint64_t buf, uint64_t) {
             }
         }
         rc = target->handle(ctx);
+        note_origin(target, ctx, false);
     }
 
     {

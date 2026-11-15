@@ -462,6 +462,7 @@ static bool save_state(const std::string& path, const DumpStats& mem) {
     uint32_t threads = 0, events = 0, sessions = 0, shared = 0, transfers = 0, other = 0, unknown_sessions = 0;
     std::string other_names;
     std::string body;
+    std::vector<std::pair<uint32_t, std::shared_ptr<KObject>>> session_objs;
     uint32_t count = 0;
     Out ob;
     for (auto& kv : ke.objects) {
@@ -514,6 +515,7 @@ static bool save_state(const std::string& path, const DumpStats& mem) {
             bool domain = false;
             if (ipc_session_info(*obj, name, domain)) {
                 sessions++;
+                session_objs.emplace_back(handle, obj);
                 ob.put<uint32_t>(kObjSession);
                 ob.put<uint32_t>(handle);
                 ob.put<uint8_t>(domain);
@@ -539,6 +541,11 @@ static bool save_state(const std::string& path, const DumpStats& mem) {
         const std::vector<uint8_t> j = nvn::journal_export();
         o.put<uint32_t>(uint32_t(j.size()));
         o.raw(j.data(), j.size());
+    }
+    {
+        const std::vector<uint8_t> g = ipc_graph_export(session_objs);
+        o.put<uint32_t>(uint32_t(g.size()));
+        o.raw(g.data(), g.size());
     }
     log("snap: state: %u threads, %u events, %u sessions (%u of them stubs or objects made by another service), %u shared "
         "memories, %u transfer memories, %u objects not saved%s",
@@ -748,6 +755,8 @@ bool restore_and_run() {
     }
     std::vector<uint8_t> journal(in.get<uint32_t>());
     if (in.ok && !journal.empty()) in.raw(journal.data(), journal.size());
+    std::vector<uint8_t> graph(in.get<uint32_t>());
+    if (in.ok && !graph.empty()) in.raw(graph.data(), graph.size());
     if (!in.ok) {
         log("snap: restore: the NVN journal is damaged. The process is half restored and cannot go on.");
         plat::exit_process(1);
@@ -758,8 +767,9 @@ bool restore_and_run() {
         (long long)std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count(), live.size());
     struct Ctx {
         std::vector<uint8_t>* journal;
+        std::vector<uint8_t>* graph;
         std::vector<std::shared_ptr<KThread>>* live;
-    } ctx{&journal, &live};
+    } ctx{&journal, &graph, &live};
     kernel_run_restored(
         main_thread.get(),
         [](KThread* t, void* p) {
@@ -767,6 +777,8 @@ bool restore_and_run() {
             // The GPU objects first, on this thread (they call guest code), then the others may run.
             CPU c = t->ctx;
             c.x[31] -= 0x2000;
+            if (!ipc_graph_import(c, x->graph->data(), x->graph->size()))
+                log("snap: restore: the service objects did not all read; going on without them");
             if (!nvn::journal_replay(c, x->journal->data(), x->journal->size())) {
                 log("snap: restore: the NVN journal does not read. The process is half restored and cannot go on.");
                 plat::exit_process(1);
