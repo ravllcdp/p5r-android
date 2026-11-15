@@ -25,6 +25,7 @@
 
 #include "game_image.h"
 #include "platform.h"
+#include "snapshot.h"
 #include "users.h"
 
 namespace fs = std::filesystem;
@@ -68,7 +69,9 @@ std::map<std::string, fs::path> g_mounts;
 // Open files: shared so a read in progress survives a close from another thread. Reads run outside g_fs (which
 // only guards the tables): one global lock made every streaming thread (Bink animations, FMOD banks) wait behind
 // any big read, felt as hitches.
+thread_local int t_open_mode = 1;  // the mode of the OpenFile being served (quick resume opens the same again)
 struct File {
+    int mode = t_open_mode;
     FILE* f;
     std::string path;
     const nxi::GameImage::Entry* entry = nullptr;  // a RomFS file of the game image (f is null)
@@ -430,6 +433,7 @@ void GetEntryType(CPU& c) {  // (DirectoryEntryType* out, path)
 
 void OpenFile(CPU& c) {  // (FileHandle* out, path, int mode: 1 read, 2 write, 4 append)
     std::lock_guard lk(g_fs);
+    t_open_mode = int(c.x[2]);
     std::string guest = cstr(c.x[1]);
     fs::path p = resolve(guest);
     int mode = int(c.x[2]);
@@ -496,6 +500,68 @@ std::shared_ptr<File> open_file(uint64_t h) {
     auto it = g_files.find(h);
     return it == g_files.end() ? nullptr : it->second;
 }
+
+// Quick resume: the files the game has open (it keeps their handles in its memory and goes on reading with them).
+static const bool g_reg_fs_state = (snap::register_state(
+    "fs_files",
+    [] {
+        std::lock_guard lk(g_fs);
+        std::vector<uint8_t> b;
+        auto put = [&](const void* p, size_t n) { b.insert(b.end(), static_cast<const uint8_t*>(p), static_cast<const uint8_t*>(p) + n); };
+        put(&g_next, 8);
+        const uint32_t n = uint32_t(g_files.size());
+        put(&n, 4);
+        for (auto& [h, f] : g_files) {
+            put(&h, 8);
+            const int32_t mode = f->mode;
+            put(&mode, 4);
+            const uint32_t len = uint32_t(f->path.size());
+            put(&len, 4);
+            put(f->path.data(), len);
+        }
+        return b;
+    },
+    [](const uint8_t* p, size_t size) {
+        size_t at = 0;
+        auto take = [&](void* d, size_t n) {
+            if (at + n > size) return false;
+            std::memcpy(d, p + at, n);
+            at += n;
+            return true;
+        };
+        uint64_t next = 0;
+        uint32_t n = 0;
+        if (!take(&next, 8) || !take(&n, 4)) return;
+        int ok = 0, bad = 0;
+        for (uint32_t i = 0; i < n; i++) {
+            uint64_t h = 0;
+            int32_t mode = 0;
+            uint32_t len = 0;
+            if (!take(&h, 8) || !take(&mode, 4) || !take(&len, 4) || at + len > size) return;
+            std::string path(reinterpret_cast<const char*>(p + at), len);
+            at += len;
+            uint64_t out = 0;
+            CPU c{};
+            c.x[0] = reinterpret_cast<uint64_t>(&out);
+            c.x[1] = reinterpret_cast<uint64_t>(path.c_str());
+            c.x[2] = uint64_t(mode);
+            OpenFile(c);
+            std::lock_guard lk(g_fs);
+            auto it = g_files.find(out);
+            if (c.x[0] == kOk && it != g_files.end()) {
+                if (out != h) {
+                    g_files[h] = it->second;
+                    g_files.erase(it);
+                }
+                ok++;
+            } else {
+                bad++;
+            }
+        }
+        std::lock_guard lk(g_fs);
+        g_next = std::max(g_next, next);
+        log("fs: restored: %d open files back, %d that could not be opened", ok, bad);
+    }), true);
 
 void CloseFile(CPU& c) {
     std::lock_guard lk(g_fs);
