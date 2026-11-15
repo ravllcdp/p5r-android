@@ -377,6 +377,22 @@ void register_loop(const char* name, CPU& c) {
     else *t->loop_ctx = c;
 }
 
+namespace {
+struct StateHook {
+    std::function<std::vector<uint8_t>()> save;
+    std::function<void(const uint8_t*, size_t)> restore;
+};
+std::map<std::string, StateHook>& state_hooks() {
+    static std::map<std::string, StateHook> m;
+    return m;
+}
+}  // namespace
+
+void register_state(const char* name, std::function<std::vector<uint8_t>()> save,
+                    std::function<void(const uint8_t*, size_t)> restore) {
+    state_hooks()[name] = {std::move(save), std::move(restore)};
+}
+
 void register_event(const char* name, std::shared_ptr<EventState> state) { event_registry()[name] = std::move(state); }
 
 void note_call(CPU& c, uint32_t code, int depth) {
@@ -546,6 +562,15 @@ static bool save_state(const std::string& path, const DumpStats& mem) {
         const std::vector<uint8_t> g = ipc_graph_export(session_objs);
         o.put<uint32_t>(uint32_t(g.size()));
         o.raw(g.data(), g.size());
+    }
+    {
+        o.put<uint32_t>(uint32_t(state_hooks().size()));
+        for (auto& [name, hook] : state_hooks()) {
+            const std::vector<uint8_t> b = hook.save();
+            o.str(name);
+            o.put<uint32_t>(uint32_t(b.size()));
+            o.raw(b.data(), b.size());
+        }
     }
     log("snap: state: %u threads, %u events, %u sessions (%u of them stubs or objects made by another service), %u shared "
         "memories, %u transfer memories, %u objects not saved%s",
@@ -771,6 +796,12 @@ bool restore_and_run() {
     if (in.ok && !journal.empty()) in.raw(journal.data(), journal.size());
     std::vector<uint8_t> graph(in.get<uint32_t>());
     if (in.ok && !graph.empty()) in.raw(graph.data(), graph.size());
+    std::vector<std::pair<std::string, std::vector<uint8_t>>> hook_blobs(in.ok ? in.get<uint32_t>() : 0);
+    for (auto& [name, b] : hook_blobs) {
+        name = in.str();
+        b.resize(in.get<uint32_t>());
+        if (in.ok && !b.empty()) in.raw(b.data(), b.size());
+    }
     if (!in.ok) {
         log("snap: restore: the NVN journal is damaged. The process is half restored and cannot go on.");
         plat::exit_process(1);
@@ -782,8 +813,9 @@ bool restore_and_run() {
     struct Ctx {
         std::vector<uint8_t>* journal;
         std::vector<uint8_t>* graph;
+        std::vector<std::pair<std::string, std::vector<uint8_t>>>* hooks;
         std::vector<std::shared_ptr<KThread>>* live;
-    } ctx{&journal, &graph, &live};
+    } ctx{&journal, &graph, &hook_blobs, &live};
     kernel_run_restored(
         main_thread.get(),
         [](KThread* t, void* p) {
@@ -803,6 +835,11 @@ bool restore_and_run() {
                 if (!good) log("snap: restore: the GPU images did not all read; the picture may start empty");
             } else {
                 log("snap: restore: no GPU file; images start empty");
+            }
+            for (auto& [name, b] : *x->hooks) {
+                auto it = state_hooks().find(name);
+                if (it != state_hooks().end()) it->second.restore(b.data(), b.size());
+                else log("snap: restore: saved state '%s' has no taker in this build", name.c_str());
             }
             start_watcher();
             for (auto& th : *x->live) kernel_start_restored(th.get());

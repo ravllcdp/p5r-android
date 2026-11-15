@@ -8,9 +8,11 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include <nx/runtime.h>
 
@@ -56,6 +58,11 @@ void note_call(CPU& c, uint32_t code, int depth);
 void register_loop(const char* name, CPU& c);
 void register_loop_function(const char* name, void (*fn)(CPU&));
 void (*loop_function(const std::string& name))(CPU&);
+
+// State a runtime part keeps outside guest memory (the audio queue): saved as bytes under its name, handed back to it
+// before the guest threads resume in a restored process.
+void register_state(const char* name, std::function<std::vector<uint8_t>()> save,
+                    std::function<void(const uint8_t*, size_t)> restore);
 
 // Events that live in the runtime (vsync, audio frame): a restored handle must point at this process's, not a copy.
 void register_event(const char* name, std::shared_ptr<EventState> state);

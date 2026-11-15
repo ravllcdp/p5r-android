@@ -108,6 +108,56 @@ void player() {
     }
 }
 
+// Quick resume: the output's own state (the buffers the game appended and has not got back, whether it is started) and
+// its system event (a name, so a restored handle is signalled by this process's player).
+static bool g_player_started = false;
+static void start_player_once() {
+    static std::once_flag once;
+    std::call_once(once, [] { std::thread(player).detach(); });
+    g_player_started = true;
+}
+static const bool g_reg_out_event = (snap::register_event("audio_out", g_out.event), true);
+static const bool g_reg_out_state = (snap::register_state(
+    "audio_out",
+    [] {
+        std::lock_guard lk(g_out.lock);
+        std::vector<uint8_t> b;
+        auto put = [&](const void* p, size_t n) { b.insert(b.end(), static_cast<const uint8_t*>(p), static_cast<const uint8_t*>(p) + n); };
+        const uint8_t flags[2] = {g_player_started, g_out.started};
+        put(flags, 2);
+        for (auto* q : {&g_out.queued, &g_out.released}) {
+            const uint32_t n = uint32_t(q->size());
+            put(&n, 4);
+            for (uint64_t v : *q) put(&v, 8);
+        }
+        return b;
+    },
+    [](const uint8_t* p, size_t n) {
+        if (n < 2) return;
+        const bool opened = p[0], started = p[1];
+        size_t at = 2;
+        auto take = [&](std::deque<uint64_t>& q) {
+            uint32_t cnt = 0;
+            if (at + 4 > n) return;
+            std::memcpy(&cnt, p + at, 4);
+            at += 4;
+            for (uint32_t i = 0; i < cnt && at + 8 <= n; i++, at += 8) {
+                uint64_t v;
+                std::memcpy(&v, p + at, 8);
+                q.push_back(v);
+            }
+        };
+        {
+            std::lock_guard lk(g_out.lock);
+            take(g_out.queued);
+            take(g_out.released);
+            g_out.started = started;
+        }
+        if (opened) start_player_once();
+        log("audio: restored: output %s, %zu buffers queued, %zu released", started ? "started" : "stopped",
+            g_out.queued.size(), g_out.released.size());
+    }), true);
+
 void InitializeAudioOutParameter(CPU& c) {  // {u32 sample_rate; u16 channels; u16 reserved}
     st<uint32_t>(c.x[0], 0);
     st<uint16_t>(c.x[0] + 4, 0);
@@ -134,8 +184,7 @@ void OpenDefaultAudioOut(CPU& c) {  // (AudioOut*, os::SystemEvent*, const Audio
     call(c, attach);
     for (int k = 0; k < 8; k++) c.x[k] = saved[k];
     st<uint64_t>(out, 0xA0D10);  // opaque
-    static std::once_flag once;
-    std::call_once(once, [] { std::thread(player).detach(); });
+    start_player_once();
     c.x[0] = 0;
 }
 
