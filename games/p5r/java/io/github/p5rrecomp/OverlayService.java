@@ -487,7 +487,7 @@ public class OverlayService extends Service {
             lbl.setTextColor(labelInk);
             lbl.setTextSize(17);
             lbl.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD_ITALIC));
-            lbl.setDuplicateParentState(true);
+            lbl.setDuplicateParentStateEnabled(true);
             row.addView(lbl, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
 
             final TextView val = new TextView(this);
@@ -497,7 +497,7 @@ public class OverlayService extends Service {
             val.setTextSize(14);
             val.setGravity(Gravity.CENTER);
             val.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD_ITALIC));
-            val.setDuplicateParentState(true);
+            val.setDuplicateParentStateEnabled(true);
             StateListDrawable valBg = new StateListDrawable();
             valBg.addState(new int[]{android.R.attr.state_pressed},
                     new ShadowSlantDrawable(BLACK, Color.WHITE, dp(1), Color.TRANSPARENT, 0, dp(8)));
