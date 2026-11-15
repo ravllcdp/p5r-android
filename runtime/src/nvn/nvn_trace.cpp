@@ -114,6 +114,8 @@ void nvn_device_get_proc_address(CPU& c) {
 
 }  // namespace
 
+HleFn nvn_trace_stub() { return trace_stub; }
+
 NX_HLE("nvnBootstrapLoader", nvn_bootstrap_loader);
 NX_HLE("nvnDeviceGetProcAddress", nvn_device_get_proc_address);
 

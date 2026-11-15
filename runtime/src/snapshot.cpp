@@ -529,6 +529,12 @@ static bool save_state(const std::string& path, const DumpStats& mem) {
     }
     o.put<uint32_t>(count);
     o.raw(ob.b.data(), ob.b.size());
+    const auto thunks = hle_thunks_export();
+    o.put<uint32_t>(uint32_t(thunks.size()));
+    for (const ThunkRecord& t : thunks) {
+        o.str(t.name);
+        o.put<uint8_t>(uint8_t(t.kind));
+    }
     log("snap: state: %u threads, %u events, %u sessions (%u of them stubs or objects made by another service), %u shared "
         "memories, %u transfer memories, %u objects not saved%s",
         threads, events, sessions, unknown_sessions, shared, transfers, other,
@@ -723,6 +729,18 @@ bool restore_and_run() {
         plat::exit_process(1);
     }
     kernel_set_counters(next_handle, next_thread_id, heap_size);
+    {
+        std::vector<ThunkRecord> thunks(in.get<uint32_t>());
+        for (ThunkRecord& t : thunks) {
+            t.name = in.str();
+            t.kind = in.get<uint8_t>();
+        }
+        if (!in.ok || !hle_thunks_restore(thunks)) {
+            log("snap: restore: the table of runtime functions does not match. The process is half restored and cannot go on.");
+            plat::exit_process(1);
+        }
+        log("snap: restore: %zu runtime function addresses back", thunks.size());
+    }
     const auto t1 = std::chrono::steady_clock::now();
     log("snap: restore: %u threads, %u events, %u sessions, %u shared, %u transfer memories in %lld ms; starting %zu threads and the main one",
         restored[0], restored[1], restored[2], restored[3], restored[4],

@@ -165,6 +165,30 @@ uint64_t hle_address_or(const char* name, HleFn fallback) {
 
 uint64_t hle_address(const char* name) { return hle_address_or(name, missing_stub); }
 
+std::vector<ThunkRecord> hle_thunks_export() {
+    std::vector<ThunkRecord> out;
+    for (size_t i = 0; i < g_thunks.size(); i++) {
+        const Thunk& th = g_thunks[i];
+        const int kind = th.fn == hle_lookup(th.name.c_str()) ? 0 : th.fn == missing_stub ? 1 : 2;
+        out.push_back({th.name, kind});
+    }
+    return out;
+}
+
+bool hle_thunks_restore(const std::vector<ThunkRecord>& saved) {
+    for (size_t i = 0; i < saved.size(); i++) {
+        if (i < g_thunks.size()) {
+            if (g_thunks[i].name != saved[i].name) {
+                log("snap: thunk %zu is '%s' here and was '%s' when saved", i, g_thunks[i].name.c_str(), saved[i].name.c_str());
+                return false;
+            }
+            continue;
+        }
+        hle_address_or(saved[i].name.c_str(), saved[i].kind == 2 ? nvn_trace_stub() : missing_stub);
+    }
+    return true;
+}
+
 const char* hle_current_name() { return t_missing_name; }
 
 uint64_t hook_function(uint64_t addr, HleFn fn) {

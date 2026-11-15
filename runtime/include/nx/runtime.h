@@ -117,6 +117,16 @@ uint64_t hle_address_or(const char* name, HleFn fallback);  // unknown names get
 const char* hle_current_name();  // inside an HLE function: the name its thunk was made for
 HleFn hle_lookup(const char* name);
 
+// Quick resume (snapshot.cpp): the thunk table as it was handed out (the game keeps these addresses in its memory), and
+// putting it back in the same order. kind: 0 a registered HLE function, 1 the logging stub, 2 the NVN trace stub.
+struct ThunkRecord {
+    std::string name;
+    int kind = 0;
+};
+std::vector<ThunkRecord> hle_thunks_export();
+bool hle_thunks_restore(const std::vector<ThunkRecord>& saved);
+HleFn nvn_trace_stub();
+
 // Replaces the guest function at `addr` with fn, an HLE function. Returns an address that still runs the original
 // (call(c, it)), 0 when it cannot be hooked. Recompiled builds swap its entry in the function table (the calls through
 // call(): indirect ones); native execution patches its first instruction, so every call goes to fn (nce.cpp).
