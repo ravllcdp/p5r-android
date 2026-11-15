@@ -1,6 +1,7 @@
 // Host runtime: memory map, module loader/linker, dispatch, HLE registry, logging.
 #pragma once
 
+#include <functional>
 #include <atomic>
 #include <cstdint>
 #include <vector>
@@ -133,6 +134,8 @@ bool journal_wants(const char* name);
 void journal_note(const char* name, const uint64_t* args, uint64_t result);
 std::vector<uint8_t> journal_export();
 bool journal_replay(CPU& c, const uint8_t* data, size_t size);
+bool gpu_state_save(const std::function<bool(const void*, size_t)>& out);   // nvn_gpu_state.cpp
+bool gpu_state_restore(CPU& c, const std::function<bool(void*, size_t)>& in);
 }  // namespace nvn
 
 // Replaces the guest function at `addr` with fn, an HLE function. Returns an address that still runs the original

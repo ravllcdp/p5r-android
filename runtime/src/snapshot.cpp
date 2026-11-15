@@ -564,6 +564,19 @@ static bool save_state(const std::string& path, const DumpStats& mem) {
 
 // Freeze, dump the memory and the kernel state, thaw. Tries again when a thread was in a place that cannot be saved or
 // left a wait during the dump.
+// What the GPU holds (images), to its own file.
+static bool dump_gpu(const std::string& path) {
+    const std::string tmp = path + ".tmp";
+    Sink out;
+    if (!out.open_file(tmp)) return false;
+    bool ok = nvn::gpu_state_save([&](const void* p, size_t n) { return out.put(p, n); });
+    if (ok) ok = out.finish();
+    else out.abandon();
+    if (ok) ok = ::rename(tmp.c_str(), path.c_str()) == 0;
+    else ::unlink(tmp.c_str());
+    return ok;
+}
+
 static bool capture(const std::string& dir) {
     ::mkdir(dir.c_str(), 0700);
     for (int attempt = 1; attempt <= 25; attempt++) {
@@ -575,6 +588,7 @@ static bool capture(const std::string& dir) {
         // The cheap checks first: a state that cannot be saved must not cost a gigabyte of writes.
         bool ok = collect_rw(st) && save_state(dir + "/state.bin", st);
         ok = ok && dump_memory(dir + "/mem.bin", st);
+        ok = ok && dump_gpu(dir + "/gpu.bin");
         const uint64_t e1 = wake_epoch();
         const auto t2 = std::chrono::steady_clock::now();
         thaw();
@@ -782,6 +796,13 @@ bool restore_and_run() {
             if (!nvn::journal_replay(c, x->journal->data(), x->journal->size())) {
                 log("snap: restore: the NVN journal does not read. The process is half restored and cannot go on.");
                 plat::exit_process(1);
+            }
+            if (FILE* gf = std::fopen((plat::internal_dir() + "/snap/gpu.bin").c_str(), "rb")) {
+                const bool good = nvn::gpu_state_restore(c, [&](void* p, size_t n) { return std::fread(p, 1, n, gf) == n; });
+                std::fclose(gf);
+                if (!good) log("snap: restore: the GPU images did not all read; the picture may start empty");
+            } else {
+                log("snap: restore: no GPU file; images start empty");
             }
             for (auto& th : *x->live) kernel_start_restored(th.get());
         },
