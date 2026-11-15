@@ -68,6 +68,8 @@ public class OverlayService extends Service {
     private WindowManager mWm;
     private View mListenView;
     private View mIconView;
+    private View mSaveView;    // the second badge: one touch saves the game
+    private View mBannerView;  // "Guardando" / "Partida guardada"
     private View mPanelRoot;
     private boolean mIconShown;
     private boolean mPanelOpen;
@@ -95,6 +97,8 @@ public class OverlayService extends Service {
         if (mWm != null) {
             removeQuiet(mListenView);
             removeQuiet(mIconView);
+            removeQuiet(mSaveView);
+            removeQuiet(mBannerView);
             removeQuiet(mPanelRoot);
         }
         super.onDestroy();
@@ -230,11 +234,33 @@ public class OverlayService extends Service {
         mIconView = badge;
         mWm.addView(mIconView, p);
         badge.animate().alpha(1f).setDuration(150).start();
+
+        // Beside the star, to its left: a touch saves the game, no menu.
+        View save = new SaveBadgeView(this);
+        save.setAlpha(0f);
+        save.setContentDescription("Guardar partida");
+        save.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                mHandler.removeCallbacks(mHideIcon);
+                removeIconNow();
+                requestSave();
+            }
+        });
+        WindowManager.LayoutParams sp = new WindowManager.LayoutParams(
+                dp(64), dp(52), WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                flags, PixelFormat.TRANSLUCENT);
+        sp.gravity = Gravity.TOP | Gravity.END;
+        sp.x = dp(10) + dp(64) + dp(2);
+        sp.y = dp(10);
+        mSaveView = save;
+        mWm.addView(mSaveView, sp);
+        save.animate().alpha(1f).setDuration(150).start();
     }
 
     private void hideIcon() {
         if (!mIconShown || mIconView == null) return;
         final View badge = mIconView;
+        if (mSaveView != null) mSaveView.animate().alpha(0f).setDuration(200).start();
         badge.animate().alpha(0f).setDuration(200).withEndAction(new Runnable() {
             @Override public void run() {
                 if (mIconView == badge) removeIconNow();
@@ -249,6 +275,100 @@ public class OverlayService extends Service {
             removeQuiet(mIconView);
             mIconView = null;
         }
+        if (mSaveView != null) {
+            mSaveView.animate().cancel();
+            removeQuiet(mSaveView);
+            mSaveView = null;
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Saving the game (the runtime saves a state when it finds snap.dump: runtime snapshot.cpp)
+    // -----------------------------------------------------------------------
+
+    private File stateFile() {
+        File f = new File(getFilesDir(), "snap/state.bin");
+        return f.isFile() ? f : new File(getFilesDir(), "snap.old/state.bin");
+    }
+
+    private void requestSave() {
+        final long asked = System.currentTimeMillis();
+        try {
+            File trigger = new File(android.os.Environment.getExternalStorageDirectory(), "Persona 5 Royal/snap.dump");
+            //noinspection ResultOfMethodCallIgnored
+            trigger.createNewFile();
+        } catch (Exception e) {
+            showBanner("No se pudo guardar. Revisa el permiso de archivos de la app.", 2);
+            return;
+        }
+        showBanner("Guardando…", 0);
+        final Runnable[] poll = new Runnable[1];
+        poll[0] = new Runnable() {
+            @Override public void run() {
+                File f = stateFile();
+                if (f.isFile() && f.lastModified() >= asked - 1000) {
+                    showBanner("Partida guardada", 1);
+                } else if (System.currentTimeMillis() - asked > 25000) {
+                    showBanner("No se pudo guardar. Prueba otra vez en unos segundos.", 2);
+                } else {
+                    mHandler.postDelayed(poll[0], 300);
+                }
+            }
+        };
+        mHandler.postDelayed(poll[0], 600);
+    }
+
+    private final Runnable mHideBanner = new Runnable() {
+        @Override public void run() { removeBanner(); }
+    };
+
+    private void removeBanner() {
+        mHandler.removeCallbacks(mHideBanner);
+        if (mBannerView != null) {
+            mBannerView.animate().cancel();
+            removeQuiet(mBannerView);
+            mBannerView = null;
+        }
+    }
+
+    /** kind: 0 working (black), 1 done (red), 2 problem (white, red text). Drawn in capitals, written in sentence case. */
+    private void showBanner(String text, int kind) {
+        removeBanner();
+        int fill = kind == 1 ? RED : kind == 2 ? Color.WHITE : BLACK;
+        int ink = kind == 2 ? RED : Color.WHITE;
+        TextView t = new TextView(this);
+        t.setText(text);
+        t.setAllCaps(true);
+        t.setTextColor(ink);
+        t.setTextSize(20);
+        t.setLetterSpacing(0.06f);
+        t.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD_ITALIC));
+        t.setPadding(dp(30), dp(10), dp(30), dp(12));
+        t.setBackground(new SlantDrawable(fill, kind == 0 ? RED : Color.WHITE, dp(2), dp(14), false));
+        t.setRotation(-2f);
+        t.setAlpha(0f);
+        t.setTranslationX(dp(40));
+        int flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                  | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                  | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN;
+        WindowManager.LayoutParams p = new WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, flags, PixelFormat.TRANSLUCENT);
+        p.gravity = Gravity.TOP | Gravity.END;
+        p.x = dp(14);
+        p.y = dp(14);
+        mBannerView = t;
+        mWm.addView(t, p);
+        t.animate().alpha(1f).translationX(0f).setDuration(160).start();
+        if (kind != 0) mHandler.postDelayed(mHideBanner, kind == 1 ? 2200 : 4000);
+    }
+
+    private String lastSaveLine() {
+        File f = stateFile();
+        if (!f.isFile()) return "Aún no hay guardado. Toca el icono de guardar para crear uno.";
+        CharSequence ago = android.text.format.DateUtils.getRelativeTimeSpanString(
+                f.lastModified(), System.currentTimeMillis(), android.text.format.DateUtils.MINUTE_IN_MILLIS);
+        return "Último guardado: " + ago;
     }
 
     // -----------------------------------------------------------------------
@@ -283,9 +403,11 @@ public class OverlayService extends Service {
         header.setPadding(dp(18), dp(10), dp(14), dp(10));
 
         TextView title = new TextView(this);
-        title.setText("AJUSTES");
+        title.setText("Ajustes");
+        title.setAllCaps(true);
+        title.setRotation(-3f);
         title.setTextColor(Color.WHITE);
-        title.setTextSize(24);
+        title.setTextSize(30);
         title.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD_ITALIC));
         title.setLetterSpacing(0.08f);
         header.addView(title, new FrameLayout.LayoutParams(
@@ -299,6 +421,22 @@ public class OverlayService extends Service {
         header.addView(close, new FrameLayout.LayoutParams(dp(42), dp(34), Gravity.CENTER_VERTICAL | Gravity.END));
         root.addView(header, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        // A white slash under the red slab, as in the game's menus
+        View slash = new View(this);
+        slash.setBackground(new SlantDrawable(Color.WHITE, Color.TRANSPARENT, 0, dp(18), false));
+        LinearLayout.LayoutParams slashLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(5));
+        slashLp.setMargins(dp(24), dp(3), 0, 0);
+        root.addView(slash, slashLp);
+
+        TextView last = new TextView(this);
+        last.setText(lastSaveLine());
+        last.setTextColor(Color.WHITE);
+        last.setTextSize(13);
+        last.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD_ITALIC));
+        last.setPadding(dp(18), dp(10), dp(16), dp(0));
+        root.addView(last);
 
         // Note
         TextView note = new TextView(this);
@@ -322,9 +460,10 @@ public class OverlayService extends Service {
             row.setPadding(0, dp(7), 0, dp(7));
 
             TextView lbl = new TextView(this);
-            lbl.setText(o.label.toUpperCase());
+            lbl.setText(o.label);
+            lbl.setAllCaps(true);
             lbl.setTextColor(Color.WHITE);
-            lbl.setTextSize(15);
+            lbl.setTextSize(17);
             lbl.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD_ITALIC));
             row.addView(lbl, new LinearLayout.LayoutParams(0,
                     LinearLayout.LayoutParams.WRAP_CONTENT, 1));
@@ -350,12 +489,12 @@ public class OverlayService extends Service {
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
 
         // Save button: white slab with red text, inverts on press
-        TextView save = slantButton("GUARDAR", Color.WHITE, Color.rgb(200, 200, 200), RED, 18, 0, dp(52));
+        TextView save = slantButton("Aplicar ajustes", Color.WHITE, Color.rgb(200, 200, 200), RED, 18, 0, dp(52));
         save.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
                 saveConfig();
                 android.widget.Toast.makeText(OverlayService.this,
-                        "Guardado. Reinicia el juego para aplicar.",
+                        "Ajustes aplicados. Reinicia el juego para verlos.",
                         android.widget.Toast.LENGTH_LONG).show();
                 closePanel();
             }
@@ -386,6 +525,7 @@ public class OverlayService extends Service {
         t.setTextColor(textColor);
         t.setTextSize(sp);
         t.setGravity(Gravity.CENTER);
+        t.setAllCaps(true);
         t.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD_ITALIC));
         t.setClickable(true);
         StateListDrawable sl = new StateListDrawable();
@@ -515,6 +655,51 @@ public class OverlayService extends Service {
             mStar.close();
             c.drawPath(mStar, mStarP);
             c.drawPath(mStar, mStarLineP);
+            c.restore();
+        }
+    }
+
+    /** The save badge: black slanted plate, red outline, white arrow into a tray; tilted the other way from the star's. */
+    private final class SaveBadgeView extends View {
+        private final Paint mPlateP = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint mLineP = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint mInkP = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Path mPlate = new Path();
+        private final Path mArrow = new Path();
+
+        SaveBadgeView(android.content.Context ctx) {
+            super(ctx);
+            mPlateP.setColor(BLACK);
+            mPlateP.setStyle(Paint.Style.FILL);
+            mLineP.setColor(RED);
+            mLineP.setStyle(Paint.Style.STROKE);
+            mLineP.setStrokeWidth(dp(3));
+            mInkP.setColor(Color.WHITE);
+            mInkP.setStyle(Paint.Style.FILL);
+            setClickable(true);
+        }
+
+        @Override protected void onDraw(Canvas c) {
+            float w = getWidth(), h = getHeight();
+            float m = dp(4), s = dp(12);
+            c.save();
+            c.rotate(5f, w / 2f, h / 2f);
+            mPlate.reset();
+            mPlate.moveTo(m + s, m); mPlate.lineTo(w - m, m);
+            mPlate.lineTo(w - m - s, h - m); mPlate.lineTo(m, h - m);
+            mPlate.close();
+            c.drawPath(mPlate, mPlateP);
+            c.drawPath(mPlate, mLineP);
+
+            float cx = w / 2f, cy = h / 2f - dp(3);
+            mArrow.reset();
+            mArrow.moveTo(cx - dp(3), cy - dp(11)); mArrow.lineTo(cx + dp(3), cy - dp(11));
+            mArrow.lineTo(cx + dp(3), cy - dp(1)); mArrow.lineTo(cx + dp(9), cy - dp(1));
+            mArrow.lineTo(cx, cy + dp(9)); mArrow.lineTo(cx - dp(9), cy - dp(1));
+            mArrow.lineTo(cx - dp(3), cy - dp(1));
+            mArrow.close();
+            c.drawPath(mArrow, mInkP);
+            c.drawRect(cx - dp(11), cy + dp(12), cx + dp(11), cy + dp(15), mInkP);
             c.restore();
         }
     }
