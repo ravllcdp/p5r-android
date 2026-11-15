@@ -40,6 +40,7 @@
 #include "diagnostics.h"
 #include "media_image.h"
 #include "platform.h"
+#include "snapshot.h"
 
 namespace nx {
 
@@ -571,6 +572,9 @@ void movie_pump_thread(CPU& c) {
     log("movie: pump thread running");
     for (;;) {
         plat::sleep_ns(2'000'000);
+        // Quick resume: this loop never goes back through nce_dispatch, so it parks here. A restored process starts
+        // the thread again from its entry (it keeps no state of its own).
+        if (snap::g_freeze.load(std::memory_order_relaxed)) snap::park(c, 0);
         std::vector<uint64_t> events;
         bool dump = false;
         {
