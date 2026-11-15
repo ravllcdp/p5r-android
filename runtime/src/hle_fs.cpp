@@ -509,6 +509,21 @@ static const bool g_reg_fs_state = (snap::register_state(
         std::vector<uint8_t> b;
         auto put = [&](const void* p, size_t n) { b.insert(b.end(), static_cast<const uint8_t*>(p), static_cast<const uint8_t*>(p) + n); };
         put(&g_next, 8);
+        auto put_str = [&](const std::string& v) {
+            const uint32_t l = uint32_t(v.size());
+            put(&l, 4);
+            put(v.data(), l);
+        };
+        const uint32_t nm = uint32_t(g_mounts.size());
+        put(&nm, 4);
+        for (auto& [name, path] : g_mounts) put_str(name), put_str(utf8(path));
+        const uint32_t ni = uint32_t(g_image_mounts.size());
+        put(&ni, 4);
+        for (auto& [name, v] : g_image_mounts) {
+            put_str(name);
+            const uint8_t flag = v;
+            put(&flag, 1);
+        }
         const uint32_t n = uint32_t(g_files.size());
         put(&n, 4);
         for (auto& [h, f] : g_files) {
@@ -531,7 +546,33 @@ static const bool g_reg_fs_state = (snap::register_state(
         };
         uint64_t next = 0;
         uint32_t n = 0;
-        if (!take(&next, 8) || !take(&n, 4)) return;
+        auto take_str = [&](std::string& v) {
+            uint32_t l = 0;
+            if (!take(&l, 4) || at + l > size) return false;
+            v.assign(reinterpret_cast<const char*>(p + at), l);
+            at += l;
+            return true;
+        };
+        if (!take(&next, 8)) return;
+        {
+            std::lock_guard lk(g_fs);
+            uint32_t nm = 0;
+            if (!take(&nm, 4)) return;
+            for (uint32_t i = 0; i < nm; i++) {
+                std::string name, path;
+                if (!take_str(name) || !take_str(path)) return;
+                g_mounts[name] = fs::u8path(path);
+            }
+            uint32_t ni = 0;
+            if (!take(&ni, 4)) return;
+            for (uint32_t i = 0; i < ni; i++) {
+                std::string name;
+                uint8_t flag = 0;
+                if (!take_str(name) || !take(&flag, 1)) return;
+                g_image_mounts[name] = flag;
+            }
+        }
+        if (!take(&n, 4)) return;
         int ok = 0, bad = 0;
         for (uint32_t i = 0; i < n; i++) {
             uint64_t h = 0;
