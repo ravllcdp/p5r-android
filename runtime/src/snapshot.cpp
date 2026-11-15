@@ -1,7 +1,9 @@
 #include "snapshot.h"
 
 #include <fcntl.h>
+#include <signal.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -218,7 +220,8 @@ struct Sink {
         return true;
     }
     // The tail, padded to a block, then the file cut to its real length.
-    bool finish() {
+    // release=false: the caller is about to exit (a forked child), nothing to free.
+    bool finish(bool release = true) {
         bool ok = true;
         if (used) {
             const size_t padded = (used + 4095) & ~size_t(4095);
@@ -228,7 +231,7 @@ struct Sink {
         if (ok) ok = ::ftruncate(fd, off_t(total)) == 0 && ::fsync(fd) == 0;
         ::posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
         ::close(fd);
-        std::free(buf);
+        if (release) std::free(buf);
         fd = -1;
         buf = nullptr;
         return ok;
@@ -270,31 +273,33 @@ static bool collect_rw(DumpStats& st) {
 // The guest's memory to a file: every page of the guest windows that the kernel says is in RAM or in swap (untouched
 // pages are zero and are left out). Format: "P5RSNAP0", the layout (u64 count, then the window bases), then runs of
 // {u64 addr, u64 length, bytes} and a final {0, 0}. Guest threads must be frozen.
-static bool dump_memory(const std::string& path, DumpStats& st) {
-    const std::vector<Window> wins = {{kModuleBase, kModuleBase + 0x40000000ull, "modules"},
-                                      {kHeapBase, kHeapBase + kHeapMax, "heap"},
-                                      {kAliasBase, kAliasBase + kAliasSize, "alias"},
-                                      {kStackBase, kStackBase + kStackSize, "stack"},
-                                      {kKernelBase, kKernelBase + kKernelSize, "kernel"}};
-    const std::string tmp = path + ".tmp";
-    Sink out;
-    if (!out.open_file(tmp)) {
-        log("snap: cannot create %s", tmp.c_str());
-        return false;
-    }
+// ---- memory: planned while the threads are held, written by a forked child while they run again ----
+// The guest's memory is private anonymous mappings, so a fork gives the child a copy-on-write picture of it as it is at
+// that instant. The child writes the file from it; the game, thawed at once, only pays for the pages it writes to meanwhile.
+
+using Extents = std::vector<std::pair<uint64_t, uint64_t>>;
+
+static const std::vector<Window>& mem_windows() {
+    static const std::vector<Window> w = {{kModuleBase, kModuleBase + 0x40000000ull, "modules"},
+                                          {kHeapBase, kHeapBase + kHeapMax, "heap"},
+                                          {kAliasBase, kAliasBase + kAliasSize, "alias"},
+                                          {kStackBase, kStackBase + kStackSize, "stack"},
+                                          {kKernelBase, kKernelBase + kKernelSize, "kernel"}};
+    return w;
+}
+
+// The runs of pages of the windows that are in memory (or swapped out): what a save writes. Reads the page table only.
+static bool plan_memory(Extents& ex, DumpStats& st) {
+    const std::vector<Window>& wins = mem_windows();
     int pm = ::open("/proc/self/pagemap", O_RDONLY);
     FILE* maps = std::fopen("/proc/self/maps", "r");
     if (pm < 0 || !maps) {
         log("snap: cannot read /proc/self/{pagemap,maps}");
-        out.abandon();
         if (pm >= 0) ::close(pm);
         if (maps) std::fclose(maps);
         return false;
     }
-    bool ok = out.put("P5RSNAP0", 8);
-    const uint64_t n = wins.size();
-    ok = ok && out.put(&n, 8);
-    for (const Window& w : wins) ok = ok && out.put(&w.lo, 8);
+    bool ok = true;
     const uint64_t kPage = 4096;
     std::vector<uint64_t> entries;
     char line[512];
@@ -315,7 +320,7 @@ static bool dump_memory(const std::string& path, DumpStats& st) {
                 break;
             }
             uint64_t i = 0;
-            while (ok && i < pages) {
+            while (i < pages) {
                 const bool here = (entries[i] >> 63) & 1 || (entries[i] >> 62) & 1;
                 if (!here) {
                     i++;
@@ -326,22 +331,94 @@ static bool dump_memory(const std::string& path, DumpStats& st) {
                     ((entries[j] >> 63) & 1) ? st.present_pages++ : st.swapped_pages++;
                     j++;
                 }
-                const uint64_t addr = a + i * kPage, len = (j - i) * kPage;
-                ok = out.put(&addr, 8) && out.put(&len, 8) && out.put(reinterpret_cast<const void*>(addr), len);
-                st.bytes += len;
+                ex.emplace_back(a + i * kPage, (j - i) * kPage);
+                st.bytes += (j - i) * kPage;
                 i = j;
             }
         }
     }
-    const uint64_t zero[2] = {0, 0};
-    ok = ok && out.put(zero, 16);
     std::fclose(maps);
     ::close(pm);
-    if (ok) ok = out.finish();
-    else out.abandon();
-    if (ok) ok = ::rename(tmp.c_str(), path.c_str()) == 0;
-    else ::unlink(tmp.c_str());
     return ok;
+}
+
+// The file: a header, then each run as (address, length, bytes), then a zero pair. Allocates nothing (the sink's buffer
+// exists already), because it runs in a forked child too.
+static bool write_memory(Sink& out, const Extents& ex) {
+    const std::vector<Window>& wins = mem_windows();
+    bool ok = out.put("P5RSNAP0", 8);
+    const uint64_t n = wins.size();
+    ok = ok && out.put(&n, 8);
+    for (const Window& w : wins) ok = ok && out.put(&w.lo, 8);
+    for (const auto& e : ex) {
+        if (!ok) break;
+        ok = out.put(&e.first, 8) && out.put(&e.second, 8) && out.put(reinterpret_cast<const void*>(e.first), e.second);
+    }
+    const uint64_t zero[2] = {0, 0};
+    return ok && out.put(zero, 16);
+}
+
+struct MemJob {
+    pid_t pid = -1;
+    std::string path, tmp;
+};
+
+// Starts writing the memory file: a forked child when it can, otherwise right here (slower, and the game stays held).
+static bool start_memory(const std::string& path, const Extents& ex, MemJob& job) {
+    job.path = path, job.tmp = path + ".tmp";
+    Sink out;
+    if (!out.open_file(job.tmp)) {
+        log("snap: cannot create %s", job.tmp.c_str());
+        return false;
+    }
+    const pid_t pid = ::fork();
+    if (pid == 0) {
+        bool ok = write_memory(out, ex);
+        if (ok) ok = out.finish(false);
+        ::_exit(ok ? 0 : 1);
+    }
+    if (pid < 0) {
+        log("snap: fork failed, writing the memory here");
+        bool ok = write_memory(out, ex);
+        if (ok) ok = out.finish();
+        else out.abandon();
+        if (ok) ok = ::rename(job.tmp.c_str(), job.path.c_str()) == 0;
+        else ::unlink(job.tmp.c_str());
+        return ok;
+    }
+    out.abandon();  // the parent's copies of the file and the buffer; the child has its own
+    job.pid = pid;
+    return true;
+}
+
+static void cancel_memory(MemJob& job) {
+    if (job.pid > 0) {
+        ::kill(job.pid, SIGKILL);
+        int status = 0;
+        ::waitpid(job.pid, &status, 0);
+        job.pid = -1;
+    }
+    if (!job.tmp.empty()) ::unlink(job.tmp.c_str());
+}
+
+static bool finish_memory(MemJob& job) {
+    if (job.pid < 0) return true;  // written inline
+    for (int i = 0; i < 1500; i++) {  // up to 30 s
+        int status = 0;
+        const pid_t r = ::waitpid(job.pid, &status, WNOHANG);
+        if (r == job.pid) {
+            job.pid = -1;
+            const bool ok = WIFEXITED(status) && WEXITSTATUS(status) == 0;
+            if (ok && ::rename(job.tmp.c_str(), job.path.c_str()) == 0) return true;
+            ::unlink(job.tmp.c_str());
+            log("snap: the memory writer %s", ok ? "could not put the file in place" : "failed");
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    log("snap: the memory writer took too long");
+    cancel_memory(job);
+    return false;
 }
 
 // ---- the registry of the runtime's own events -----------------------------------------------------------------
@@ -590,11 +667,11 @@ static bool save_state(const std::string& path, const DumpStats& mem) {
 // Freeze, dump the memory and the kernel state, thaw. Tries again when a thread was in a place that cannot be saved or
 // left a wait during the dump.
 // What the GPU holds (images), to its own file.
-static bool dump_gpu(const std::string& path) {
+static bool write_gpu(const std::string& path, nvn::GpuCapture& cap) {
     const std::string tmp = path + ".tmp";
     Sink out;
     if (!out.open_file(tmp)) return false;
-    bool ok = nvn::gpu_state_save([&](const void* p, size_t n) { return out.put(p, n); });
+    bool ok = nvn::gpu_state_write(cap, [&](const void* p, size_t n) { return out.put(p, n); });
     if (ok) ok = out.finish();
     else out.abandon();
     if (ok) ok = ::rename(tmp.c_str(), path.c_str()) == 0;
@@ -604,33 +681,46 @@ static bool dump_gpu(const std::string& path) {
 
 static bool capture(const std::string& dir) {
     ::mkdir(dir.c_str(), 0700);
+    auto ms = [](auto a, auto b) { return (long long)std::chrono::duration_cast<std::chrono::milliseconds>(b - a).count(); };
     for (int attempt = 1; attempt <= 25; attempt++) {
-        const auto t0 = std::chrono::steady_clock::now();
         if (!freeze(8000)) return false;
         const auto t1 = std::chrono::steady_clock::now();
         const uint64_t e0 = wake_epoch();
         DumpStats st;
-        // The cheap checks first: a state that cannot be saved must not cost a gigabyte of writes.
-        auto tick = [] { return std::chrono::steady_clock::now(); };
+        Extents ex;
+        MemJob job;
+        std::shared_ptr<nvn::GpuCapture> gpu;
+        // Held part: the cheap checks first, then the picture of memory (a fork) and of the GPU (one read-back).
         bool ok = collect_rw(st) && save_state(dir + "/state.bin", st);
-        const auto ta = tick();
-        ok = ok && dump_memory(dir + "/mem.bin", st);
-        const auto tb = tick();
-        ok = ok && dump_gpu(dir + "/gpu.bin");
-        const auto tc = tick();
+        const auto ta = std::chrono::steady_clock::now();
+        ok = ok && plan_memory(ex, st) && start_memory(dir + "/mem.bin", ex, job);
+        const auto tb = std::chrono::steady_clock::now();
+        if (ok) {
+            gpu = nvn::gpu_state_capture();
+            ok = gpu != nullptr;
+        }
+        const auto tc = std::chrono::steady_clock::now();
         const uint64_t e1 = wake_epoch();
-        const auto t2 = std::chrono::steady_clock::now();
         thaw();
-        auto ms = [](auto a, auto b) { return (long long)std::chrono::duration_cast<std::chrono::milliseconds>(b - a).count(); };
-        if (ok && e0 == e1) {
-            log("snap: saved (attempt %d): %" PRIu64 " MB of memory in %" PRIu64 " regions; frozen %lld ms "
-                "(state %lld, memory %lld, gpu %lld)", attempt, st.bytes >> 20, st.regions, ms(t1, t2), ms(t1, ta),
-                ms(ta, tb), ms(tb, tc));
+        // The game runs again; what is left is writing files.
+        const bool whole = ok && e0 == e1;
+        bool wrote = false;
+        if (whole) {
+            wrote = write_gpu(dir + "/gpu.bin", *gpu);
+            wrote = finish_memory(job) && wrote;
+        } else {
+            cancel_memory(job);
+        }
+        const auto t3 = std::chrono::steady_clock::now();
+        if (wrote) {
+            log("snap: saved (attempt %d): %" PRIu64 " MB of memory in %" PRIu64
+                " regions; the game was held %lld ms (state %lld, memory %lld, gpu %lld), files done after %lld ms",
+                attempt, st.bytes >> 20, st.regions, ms(t1, tc), ms(t1, ta), ms(ta, tb), ms(tb, tc), ms(t1, t3));
             return true;
         }
-        log("snap: attempt %d failed (%s), trying again", attempt, ok ? "a thread left a wait during the dump" : "see above");
+        log("snap: attempt %d failed (%s), trying again", attempt,
+            ok ? (whole ? "writing" : "a thread left a wait during the dump") : "see above");
         std::this_thread::sleep_for(std::chrono::milliseconds(40));
-        (void)t0;
     }
     return false;
 }

@@ -2,6 +2,7 @@
 #pragma once
 
 #include <functional>
+#include <memory>
 #include <atomic>
 #include <cstdint>
 #include <vector>
@@ -136,6 +137,11 @@ std::vector<uint8_t> journal_export();
 bool journal_replay(CPU& c, const uint8_t* data, size_t size);
 void gpu_debug_shot();
 bool gpu_state_save(const std::function<bool(const void*, size_t)>& out);   // nvn_gpu_state.cpp
+// The same in two steps, so the game can run in between: the capture (drains the GPU and reads every image into host
+// memory, one submit) is the part that must happen while the threads are held; the write goes to a file afterwards.
+struct GpuCapture;
+std::shared_ptr<GpuCapture> gpu_state_capture();                                          // nvn_gpu_state.cpp
+bool gpu_state_write(GpuCapture& cap, const std::function<bool(const void*, size_t)>& out);  // nvn_gpu_state.cpp
 bool gpu_state_restore(CPU& c, const std::function<bool(void*, size_t)>& in);
 }  // namespace nvn
 

@@ -182,7 +182,14 @@ struct Header {
 
 }  // namespace
 
-bool gpu_state_save(const std::function<bool(const void*, size_t)>& out) {
+struct GpuCapture {
+    Staging st;
+    std::vector<Header> headers;
+    std::vector<uint64_t> offsets;  // where each image's bytes start in st.ptr
+    ~GpuCapture() { st.destroy(); }
+};
+
+std::shared_ptr<GpuCapture> gpu_state_capture() {
     wait_submits_so_far(kWaitFinish);
     worker_finish();
     gpu_wait(gpu_serial());
@@ -197,48 +204,68 @@ bool gpu_state_save(const std::function<bool(const void*, size_t)>& out) {
             if (seen.insert(t->image.get()).second) images.emplace_back(guest, t->image);
         }
     }
-    Staging st;
-    if (!st.init()) return false;
-    const char magic[8] = {'P', '5', 'R', 'G', 'P', 'U', '0', '1'};
-    const uint32_t count_pos = 0;
-    (void)count_pos;
-    uint32_t n = uint32_t(images.size());
-    bool ok = out(magic, 8) && out(&n, 4);
-    uint64_t bytes_total = 0;
+    auto cap = std::make_shared<GpuCapture>();
+    struct Item {
+        GpuImage* img;
+        std::vector<Region> regs;
+        uint64_t base;
+    };
+    std::vector<Item> items;
+    uint64_t total = 0;
     for (auto& [guest, img] : images) {
         GpuImage& g = *img;
         std::vector<Region> regs;
-        uint64_t total = 0;
+        uint64_t bytes = 0;
         Header h{};
         h.guest = guest, h.format = uint32_t(g.format), h.width = g.width, h.height = g.height, h.levels = g.levels;
         h.layers = g.layers, h.depth = g.depth, h.aspect = g.aspect, h.layout = uint32_t(g.layout);
         h.view_type = uint32_t(g.view_type);
         h.rendered = g.rendered, h.uploaded = g.uploaded, h.texels = g.texels;
-        if (!ok) break;
-        if (!plan(g, regs, total) || !st.reserve(total)) {
+        if (!plan(g, regs, bytes)) {
             h.data_size = 0;  // an image whose format this does not know: nothing saved, it starts empty
-            ok = out(&h, sizeof h);
+            cap->headers.push_back(h);
+            cap->offsets.push_back(0);
             continue;
         }
-        const VkImageLayout back = g.layout;
-        st.begin();
-        transition(st.cb, g, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-        for (const Region& r : regs) {
-            VkBufferImageCopy c = copy_of(g, r);
-            p_vkCmdCopyImageToBuffer(st.cb, g.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, st.buffer, 1, &c);
-        }
-        transition(st.cb, g, back);
-        if (!st.submit_and_wait()) {
-            st.destroy();
-            return false;
-        }
-        h.data_size = total;
-        bytes_total += total;
-        ok = out(&h, sizeof h) && out(st.ptr, total);
+        const uint64_t base = (total + 47) / 48 * 48;
+        total = base + bytes;
+        h.data_size = bytes;
+        cap->headers.push_back(h);
+        cap->offsets.push_back(base);
+        items.push_back({&g, std::move(regs), base});
     }
-    st.destroy();
-    log("snap: gpu: %u images, %llu MB", n, (unsigned long long)(bytes_total >> 20));
+    if (!cap->st.init() || !cap->st.reserve(total ? total : 48)) return nullptr;
+    cap->st.begin();
+    for (Item& it : items) {
+        GpuImage& g = *it.img;
+        const VkImageLayout back = g.layout;
+        transition(cap->st.cb, g, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        for (const Region& r : it.regs) {
+            VkBufferImageCopy c = copy_of(g, r);
+            c.bufferOffset += it.base;
+            p_vkCmdCopyImageToBuffer(cap->st.cb, g.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, cap->st.buffer, 1, &c);
+        }
+        transition(cap->st.cb, g, back);
+    }
+    if (!cap->st.submit_and_wait()) return nullptr;
+    log("snap: gpu: %zu images, %llu MB", cap->headers.size(), (unsigned long long)(total >> 20));
+    return cap;
+}
+
+bool gpu_state_write(GpuCapture& cap, const std::function<bool(const void*, size_t)>& out) {
+    const char magic[8] = {'P', '5', 'R', 'G', 'P', 'U', '0', '1'};
+    uint32_t n = uint32_t(cap.headers.size());
+    bool ok = out(magic, 8) && out(&n, 4);
+    for (size_t i = 0; ok && i < cap.headers.size(); i++) {
+        const Header& h = cap.headers[i];
+        ok = out(&h, sizeof h) && (h.data_size == 0 || out(cap.st.ptr + cap.offsets[i], h.data_size));
+    }
     return ok;
+}
+
+bool gpu_state_save(const std::function<bool(const void*, size_t)>& out) {
+    auto cap = gpu_state_capture();
+    return cap && gpu_state_write(*cap, out);
 }
 
 bool gpu_state_restore(CPU&, const std::function<bool(void*, size_t)>& in) {
