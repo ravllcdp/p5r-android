@@ -630,14 +630,62 @@ static bool capture(const std::string& dir) {
     return false;
 }
 
+// A saved state is a folder with three files. A new one is written beside it and swapped in only when it is whole, so
+// a game killed in the middle of saving leaves the last good state alone (and one killed between the two renames
+// leaves it as snap.old, which restoring also accepts).
+static const char* const kStateFiles[] = {"state.bin", "mem.bin", "gpu.bin"};
+
+static bool state_complete(const std::string& dir) {
+    for (const char* f : kStateFiles)
+        if (access((dir + "/" + f).c_str(), F_OK) != 0) return false;
+    return true;
+}
+
+static void remove_state_dir(const std::string& dir) {
+    for (const char* f : kStateFiles) {
+        ::unlink((dir + "/" + f).c_str());
+        ::unlink((dir + "/" + f + ".tmp").c_str());
+    }
+    ::rmdir(dir.c_str());
+}
+
+static std::string usable_state_dir() {
+    const std::string base = plat::internal_dir() + "/snap";
+    if (state_complete(base)) return base;
+    if (state_complete(base + ".old")) return base + ".old";
+    return {};
+}
+
+static bool capture_safely(const std::string& dir) {
+    const std::string fresh = dir + ".new", old = dir + ".old";
+    remove_state_dir(fresh);
+    if (!capture(fresh)) {
+        remove_state_dir(fresh);
+        return false;
+    }
+    if (state_complete(dir)) {
+        remove_state_dir(old);
+        if (::rename(dir.c_str(), old.c_str()) != 0) {
+            log("snap: could not set the previous state aside");
+            remove_state_dir(fresh);
+            return false;
+        }
+    }
+    if (::rename(fresh.c_str(), dir.c_str()) != 0) {
+        log("snap: could not put the new state in place");
+        return false;
+    }
+    remove_state_dir(old);
+    return true;
+}
+
 bool restore_requested() {
-    const std::string root = plat::data_root(), dir = plat::internal_dir() + "/snap";
-    return access((root + "/snap.restore").c_str(), F_OK) == 0 && access((dir + "/state.bin").c_str(), F_OK) == 0 &&
-           access((dir + "/mem.bin").c_str(), F_OK) == 0;
+    return access((plat::data_root() + "/snap.restore").c_str(), F_OK) == 0 && !usable_state_dir().empty();
 }
 
 bool restore_and_run() {
-    const std::string root = plat::data_root(), dir = plat::internal_dir() + "/snap";
+    const std::string root = plat::data_root(), dir = usable_state_dir();
+    if (dir.empty()) return false;
     std::remove((root + "/snap.restore").c_str());  // a state that crashes must not trap the next start
     const auto t0 = std::chrono::steady_clock::now();
     std::string blob;
@@ -814,11 +862,12 @@ bool restore_and_run() {
         restored[0], restored[1], restored[2], restored[3], restored[4],
         (long long)std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count(), live.size());
     struct Ctx {
+        std::string dir;
         std::vector<uint8_t>* journal;
         std::vector<uint8_t>* graph;
         std::vector<std::pair<std::string, std::vector<uint8_t>>>* hooks;
         std::vector<std::shared_ptr<KThread>>* live;
-    } ctx{&journal, &graph, &hook_blobs, &live};
+    } ctx{dir, &journal, &graph, &hook_blobs, &live};
     kernel_run_restored(
         main_thread.get(),
         [](KThread* t, void* p) {
@@ -832,7 +881,7 @@ bool restore_and_run() {
                 log("snap: restore: the NVN journal does not read. The process is half restored and cannot go on.");
                 plat::exit_process(1);
             }
-            if (FILE* gf = std::fopen((plat::internal_dir() + "/snap/gpu.bin").c_str(), "rb")) {
+            if (FILE* gf = std::fopen((x->dir + "/gpu.bin").c_str(), "rb")) {
                 const bool good = nvn::gpu_state_restore(c, [&](void* p, size_t n) {
                     const bool r = std::fread(p, 1, n, gf) == n;
                     ::posix_fadvise(fileno(gf), 0, 0, POSIX_FADV_DONTNEED);
@@ -869,7 +918,7 @@ void start_watcher() {
             }
             if (access(dump_trigger.c_str(), F_OK) == 0) {
                 std::remove(dump_trigger.c_str());
-                if (!capture(plat::internal_dir() + "/snap")) log("snap: could not save a state");
+                if (!capture_safely(plat::internal_dir() + "/snap")) log("snap: could not save a state");
                 continue;
             }
             if (access(trigger.c_str(), F_OK) != 0) continue;
