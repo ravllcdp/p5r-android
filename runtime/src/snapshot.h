@@ -23,6 +23,9 @@ void park(CPU& c, uint32_t code);
 bool freeze(int timeout_ms);
 void thaw();
 
+// How many times a thread left a wait while frozen (a dump is only consistent if this did not change during it).
+uint64_t wake_epoch();
+
 // Marks the calling guest thread as still while it waits (a kernel wait that can last long).
 struct WaitScope {
     WaitScope();
