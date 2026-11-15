@@ -114,6 +114,7 @@ set(NX_RUNTIME_SOURCES
     runtime/src/memory.cpp
     runtime/src/kernel.cpp
     runtime/src/kernel_watch.cpp
+    runtime/src/snapshot.cpp
     runtime/src/ipc.cpp
     runtime/src/svc_am.cpp
     runtime/src/svc_set.cpp

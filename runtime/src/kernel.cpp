@@ -18,6 +18,7 @@
 
 #include "kernel_state.h"
 #include "platform.h"
+#include "snapshot.h"
 #if NX_NCE
 #include "nce/nce.h"
 #endif
@@ -125,6 +126,7 @@ NX_HLE("_ZN2nn2os13GetSystemTickEv", hle_get_system_tick);
 
 // Wait (with g_k held) until `self->wake` or timeout (ns, <0 = forever). Returns false on timeout.
 static bool block(std::unique_lock<std::recursive_mutex>& lk, KThread* self, int64_t timeout_ns) {
+    snap::WaitScope still;
     if (timeout_ns < 0) {
         self->cv.wait(lk, [&] { return self->wake; });
         return true;
@@ -354,6 +356,7 @@ static uint32_t svc_wait_synchronization(CPU& c, uint64_t handles, int32_t count
         KThread* t;
         ~Leave() { remove(g_sync_waiters, t); }
     } leave{self};
+    snap::WaitScope still;
     for (;;) {
         if (self->cancel) {
             self->cancel = false;
@@ -546,6 +549,7 @@ static void svc_impl(CPU& c, uint32_t imm, uint64_t pc) {
             int64_t ns = int64_t(c.x[0]);
             if (ns > 0) {
                 g_sleep_calls.fetch_add(1, std::memory_order_relaxed);
+                snap::WaitScope still;
                 plat::sleep_ns(ns);
                 return;
             }

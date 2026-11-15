@@ -38,6 +38,11 @@ struct KThread : KObject {
     uint64_t wait_mutex = 0, wait_key = 0, wait_addr = 0;
     uint32_t wait_tag = 0;
     std::condition_variable_any cv;  // this thread's own wake-up (with the kernel lock)
+    // Quick resume (snapshot.cpp): 1 while parked at the entry of a call, wait depth, and the call it was about to make.
+    std::atomic<int> snap_state{0};
+    std::atomic<int> snap_wait{0};
+    uint32_t snap_code = 0;
+    uint64_t snap_args[8] = {};
     bool signaled() const override { return exited; }
 };
 

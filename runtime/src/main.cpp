@@ -16,6 +16,7 @@ namespace fs = std::filesystem;
 
 #include "kernel.h"
 #include "platform.h"
+#include "snapshot.h"
 
 #if NX_NCE
 #include "game_image.h"
@@ -278,6 +279,7 @@ void boot() {
         fatal("nn::init::Start not found");
     }
     c.x[30] = hle_address("__process_return");
+    snap::start_watcher();
     log("entering nn::init::Start at %s", describe(start).c_str());
     call(c, start);
     log("returned from nn::init::Start");

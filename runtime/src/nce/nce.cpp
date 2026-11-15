@@ -14,6 +14,7 @@
 #include <utility>
 
 #include "platform.h"
+#include "snapshot.h"
 
 #if !defined(__aarch64__)
 #error "NX_NCE runs the game's AArch64 code natively: AArch64 hosts only"
@@ -787,6 +788,7 @@ extern "C" void nce_dispatch(uint64_t tp, uint32_t code) {
     using namespace nx::nce;
     Block* b = block_of(tp);
     CPU& c = *b->ctx;
+    if (snap::g_freeze.load(std::memory_order_relaxed)) snap::park(c, code);
     if (code & 0x80000000u) {
         const SvcSite& s = g_svc_sites[code & 0xFFFF];
         svc(c, s.imm, s.pc);
