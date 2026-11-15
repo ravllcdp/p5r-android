@@ -611,16 +611,21 @@ static bool capture(const std::string& dir) {
         const uint64_t e0 = wake_epoch();
         DumpStats st;
         // The cheap checks first: a state that cannot be saved must not cost a gigabyte of writes.
+        auto tick = [] { return std::chrono::steady_clock::now(); };
         bool ok = collect_rw(st) && save_state(dir + "/state.bin", st);
+        const auto ta = tick();
         ok = ok && dump_memory(dir + "/mem.bin", st);
+        const auto tb = tick();
         ok = ok && dump_gpu(dir + "/gpu.bin");
+        const auto tc = tick();
         const uint64_t e1 = wake_epoch();
         const auto t2 = std::chrono::steady_clock::now();
         thaw();
         auto ms = [](auto a, auto b) { return (long long)std::chrono::duration_cast<std::chrono::milliseconds>(b - a).count(); };
         if (ok && e0 == e1) {
-            log("snap: saved (attempt %d): %" PRIu64 " MB of memory in %" PRIu64 " regions; frozen %lld ms", attempt,
-                st.bytes >> 20, st.regions, ms(t1, t2));
+            log("snap: saved (attempt %d): %" PRIu64 " MB of memory in %" PRIu64 " regions; frozen %lld ms "
+                "(state %lld, memory %lld, gpu %lld)", attempt, st.bytes >> 20, st.regions, ms(t1, t2), ms(t1, ta),
+                ms(ta, tb), ms(tb, tc));
             return true;
         }
         log("snap: attempt %d failed (%s), trying again", attempt, ok ? "a thread left a wait during the dump" : "see above");
