@@ -781,6 +781,7 @@ public class Launcher extends Activity {
     }
 
     void refresh() {
+        if (status == null || play == null) return;  // the screen was not built: the game opened straight away (the Continue question)
         load();
         for (Option o : options) {
             String v = config.get(o.key);
