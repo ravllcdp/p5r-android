@@ -392,10 +392,10 @@ public class OverlayService extends Service {
 
     private String lastSaveLine() {
         File f = stateFile();
-        if (!f.isFile()) return "Aún no hay partida guardada. Toca el icono de guardar para crear una.";
+        if (!f.isFile()) return "Sin guardado";
         CharSequence ago = android.text.format.DateUtils.getRelativeTimeSpanString(
                 f.lastModified(), System.currentTimeMillis(), android.text.format.DateUtils.MINUTE_IN_MILLIS);
-        return "Último guardado: " + ago;
+        return "Guardado: " + ago;
     }
 
     // -----------------------------------------------------------------------
@@ -427,14 +427,14 @@ public class OverlayService extends Service {
     }
 
     /** A wide slanted button: white slab with red ink (primary) or red slab with white ink; inverts on press. */
-    private TextView plate(String text, boolean white) {
+    private TextView plate(String text, boolean white, int sp) {
         TextView t = new TextView(this);
         t.setText(text);
         t.setAllCaps(true);
         t.setGravity(Gravity.CENTER);
-        t.setTextSize(17);
+        t.setTextSize(sp);
+        t.setSingleLine(true);
         t.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD_ITALIC));
-        t.setLetterSpacing(0.04f);
         int ink = white ? RED : Color.WHITE, inkDown = white ? Color.WHITE : RED;
         t.setTextColor(new android.content.res.ColorStateList(
                 new int[][]{{android.R.attr.state_pressed}, {}}, new int[]{inkDown, ink}));
@@ -483,8 +483,13 @@ public class OverlayService extends Service {
 
         // Header: red slab with a white offset, title tilted with a hard black shadow, close badge
         FrameLayout header = new FrameLayout(this);
-        header.setBackground(new ShadowSlantDrawable(RED, Color.TRANSPARENT, 0, Color.WHITE, dp(4), dp(22)).flatLeft());
-        header.setPadding(dp(72), dp(10), dp(18), dp(14));
+        // The header starts exactly on the outer edge of the red bar: that edge runs from x = 40 dp at the top of the
+        // panel to x = 0 at the bottom, so over the header's height it leans by 40 dp * height / panel height.
+        final int cut = dp(40), headerH = dp(70);
+        final int panelH = Math.max(headerH * 2, getResources().getDisplayMetrics().heightPixels);
+        final int lean = Math.round(cut * (float) headerH / panelH);
+        header.setBackground(new ShadowSlantDrawable(RED, Color.TRANSPARENT, 0, Color.WHITE, dp(4), dp(22)).leftSkew(lean));
+        header.setPadding(dp(32), dp(10), dp(18), dp(14));
         header.setClipChildren(false);
 
         TextView title = new TextView(this);
@@ -508,35 +513,29 @@ public class OverlayService extends Service {
         header.addView(close, new FrameLayout.LayoutParams(dp(42), dp(34), Gravity.CENTER_VERTICAL | Gravity.END));
         LinearLayout.LayoutParams headerLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        headerLp.setMargins(0, 0, dp(4), 0);
+        headerLp.setMargins(cut - lean, 0, dp(4), 0);
         root.addView(header, headerLp);
 
-        // Info plate: last save, white with red ink, like the game's hint plates
+        // One row: the last save (white plate) and the button to load it
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+
         TextView last = new TextView(this);
         last.setText(lastSaveLine());
         last.setAllCaps(true);
         last.setTextColor(BLACK);
         last.setTextSize(12);
+        last.setSingleLine(true);
         last.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD_ITALIC));
-        last.setPadding(dp(24), dp(5), dp(24), dp(7));
+        last.setPadding(dp(20), dp(5), dp(20), dp(8));
         last.setBackground(new ShadowSlantDrawable(Color.WHITE, Color.TRANSPARENT, 0, RED, dp(3), dp(10)));
-        LinearLayout.LayoutParams lastLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        lastLp.setMargins(dp(54), dp(16), dp(16), 0);
-        root.addView(last, lastLp);
-
-        TextView note = new TextView(this);
-        note.setText("Aplicar ajustes: se usan la próxima vez que abras el juego.\n"
-                + "Aplicar y reiniciar: guarda la partida, cierra el juego y lo abre de nuevo sin continuar.");
-        note.setTextColor(Color.rgb(190, 190, 190));
-        note.setTextSize(11);
-        note.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.ITALIC));
-        note.setPadding(dp(60), dp(10), dp(16), dp(4));
-        root.addView(note);
+        bar.addView(last, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
         // Load the last save (asks twice: it throws away what has not been saved)
         final boolean hasSave = stateFile().isFile();
-        final TextView load = plate(hasSave ? "Cargar partida" : "Sin partida guardada", hasSave);
+        final TextView load = plate("Cargar partida", hasSave, 13);
         if (!hasSave) load.setAlpha(0.55f);
         final boolean[] armed = {false};
         load.setOnClickListener(new View.OnClickListener() {
@@ -547,7 +546,7 @@ public class OverlayService extends Service {
                 }
                 if (!armed[0]) {
                     armed[0] = true;
-                    load.setText("Cargar y perder lo no guardado");
+                    load.setText("Descartar y cargar");
                     mHandler.postDelayed(new Runnable() {
                         @Override public void run() {
                             if (armed[0]) { armed[0] = false; load.setText("Cargar partida"); }
@@ -559,10 +558,14 @@ public class OverlayService extends Service {
                 loadSavedGame();
             }
         });
-        LinearLayout.LayoutParams loadLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(50));
-        loadLp.setMargins(dp(54), dp(6), dp(16), dp(2));
-        root.addView(load, loadLp);
+        LinearLayout.LayoutParams loadLp = new LinearLayout.LayoutParams(0, dp(38), 1);
+        loadLp.setMargins(dp(10), 0, 0, 0);
+        bar.addView(load, loadLp);
+
+        LinearLayout.LayoutParams barLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        barLp.setMargins(dp(54), dp(14), dp(16), dp(2));
+        root.addView(bar, barLp);
 
         // Options: one slanted strip each; the whole strip is the button
         ScrollView scroll = new ScrollView(this);
@@ -639,7 +642,10 @@ public class OverlayService extends Service {
         root.addView(scroll, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
 
-        TextView apply = plate("Aplicar ajustes", true);
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+
+        TextView apply = plate("Aplicar ajustes", true, 13);
         apply.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
                 saveConfig();
@@ -649,12 +655,9 @@ public class OverlayService extends Service {
                 closePanel();
             }
         });
-        LinearLayout.LayoutParams applyLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(50));
-        applyLp.setMargins(dp(50), dp(6), dp(16), dp(2));
-        root.addView(apply, applyLp);
+        actions.addView(apply, new LinearLayout.LayoutParams(0, dp(44), 1));
 
-        TextView restart = plate("Aplicar y reiniciar", false);
+        TextView restart = plate("Aplicar y reiniciar", false, 13);
         restart.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
                 saveConfig();
@@ -662,10 +665,14 @@ public class OverlayService extends Service {
                 applyAndRestart();
             }
         });
-        LinearLayout.LayoutParams restartLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(50));
-        restartLp.setMargins(dp(50), dp(4), dp(16), dp(16));
-        root.addView(restart, restartLp);
+        LinearLayout.LayoutParams restartLp = new LinearLayout.LayoutParams(0, dp(44), 1);
+        restartLp.setMargins(dp(8), 0, 0, 0);
+        actions.addView(restart, restartLp);
+
+        LinearLayout.LayoutParams actionsLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        actionsLp.setMargins(dp(50), dp(6), dp(16), dp(14));
+        root.addView(actions, actionsLp);
 
         mPanelRoot = root;
         mWm.addView(mPanelRoot, panelParams());
@@ -845,10 +852,10 @@ public class OverlayService extends Service {
         private final Path mPath = new Path();
         private final int mSkew, mOff;
         private final boolean mHasStroke, mHasShadow;
-        private boolean mFlatLeft;
+        private int mLeftSkew = -1;
 
-        /** The left edge stays straight (the plate runs off the screen edge). */
-        ShadowSlantDrawable flatLeft() { mFlatLeft = true; return this; }
+        /** How far the left edge leans (default: as much as the right one). */
+        ShadowSlantDrawable leftSkew(int px) { mLeftSkew = px; return this; }
 
         ShadowSlantDrawable(int fill, int stroke, int strokeW, int shadow, int off, int skew) {
             mFill.setColor(fill);
@@ -867,7 +874,7 @@ public class OverlayService extends Service {
         private void shape(float w, float h, float dx, float dy) {
             float s = Math.min(mSkew, w / 3f);
             mPath.reset();
-            mPath.moveTo(mFlatLeft ? dx : dx + s, dy); mPath.lineTo(dx + w, dy);
+            mPath.moveTo(dx + (mLeftSkew >= 0 ? mLeftSkew : s), dy); mPath.lineTo(dx + w, dy);
             mPath.lineTo(dx + w - s, dy + h); mPath.lineTo(dx, dy + h);
             mPath.close();
         }
