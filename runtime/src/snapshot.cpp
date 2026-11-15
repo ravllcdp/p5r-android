@@ -699,9 +699,12 @@ bool restore_and_run() {
             char* dst = reinterpret_cast<char*>(hdr[0]);
             uint64_t left = hdr[1];
             while (left) {
-                ssize_t n = ::read(fd, dst, left > (64u << 20) ? (64u << 20) : left);
+                ssize_t n = ::read(fd, dst, left > (16u << 20) ? (16u << 20) : left);
                 if (n <= 0) { ok = false; break; }
                 dst += n, left -= uint64_t(n), total += uint64_t(n);
+                // The file's pages must not pile up next to the memory being filled: a gigabyte of both is what
+                // Android answers with a kill. Drop the ones read so far every 64 MB.
+                if ((total & ((64u << 20) - 1)) < uint64_t(n)) ::posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
             }
         }
         ::close(fd);
@@ -830,7 +833,11 @@ bool restore_and_run() {
                 plat::exit_process(1);
             }
             if (FILE* gf = std::fopen((plat::internal_dir() + "/snap/gpu.bin").c_str(), "rb")) {
-                const bool good = nvn::gpu_state_restore(c, [&](void* p, size_t n) { return std::fread(p, 1, n, gf) == n; });
+                const bool good = nvn::gpu_state_restore(c, [&](void* p, size_t n) {
+                    const bool r = std::fread(p, 1, n, gf) == n;
+                    ::posix_fadvise(fileno(gf), 0, 0, POSIX_FADV_DONTNEED);
+                    return r;
+                });
                 std::fclose(gf);
                 if (!good) log("snap: restore: the GPU images did not all read; the picture may start empty");
             } else {
