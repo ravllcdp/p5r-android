@@ -50,6 +50,23 @@ void park(CPU& c, uint32_t code) {
     t->snap_state.store(0);
 }
 
+void hold() {
+    if (!g_freeze.load()) return;
+    KThread* t = kstate::t_self;
+    if (!t) return;
+    std::unique_lock lk(g_m);
+    if (!g_freeze.load()) return;
+    t->snap_state.store(1);
+    g_parked_cv.notify_all();
+    g_thaw_cv.wait(lk, [] { return !g_freeze.load(); });
+    t->snap_state.store(0);
+}
+
+void hold_waiting(std::unique_lock<std::recursive_mutex>& lk, KThread* self) {
+    // g_freeze is set and cleared under the kernel lock for this: a thaw cannot slip between the test and the wait.
+    while (g_freeze.load()) self->cv.wait(lk);
+}
+
 WaitScope::WaitScope() {
     if (KThread* t = kstate::t_self) t->snap_wait.fetch_add(1);
 }
@@ -64,7 +81,10 @@ WaitScope::~WaitScope() {
 bool freeze(int timeout_ms) {
     const auto start = std::chrono::steady_clock::now();
     const auto deadline = start + std::chrono::milliseconds(timeout_ms);
-    g_freeze.store(true);
+    {
+        std::lock_guard k(kstate::g_k);
+        g_freeze.store(true);
+    }
     std::unique_lock lk(g_m);
     uint64_t epoch = g_woke_frozen.load();
     for (;;) {
@@ -101,8 +121,8 @@ bool freeze(int timeout_ms) {
         if (std::chrono::steady_clock::now() >= deadline) {
             log("snap: freeze timed out after %d ms (%d of %d guest threads still moving:%s)", timeout_ms, guests - parked - waiting,
                 guests, loose.c_str());
-            g_freeze.store(false);
-            g_thaw_cv.notify_all();
+            lk.unlock();
+            thaw();
             return false;
         }
         g_parked_cv.wait_for(lk, std::chrono::milliseconds(2));
@@ -111,10 +131,14 @@ bool freeze(int timeout_ms) {
 
 void thaw() {
     {
+        std::lock_guard k(kstate::g_k);
         std::lock_guard lk(g_m);
         g_freeze.store(false);
     }
     g_thaw_cv.notify_all();
+    std::lock_guard al(kstate::g_all_lock);
+    for (auto& w : kstate::g_all)
+        if (auto t = w.lock()) t->cv.notify_all();
 }
 
 
@@ -144,6 +168,81 @@ bool write_all(int fd, const void* p, size_t n) {
 
 }  // namespace
 
+// Output that goes to the file in aligned blocks, straight to storage (O_DIRECT) when the file system allows it: a
+// gigabyte through the page cache is memory pressure, and Android answers that by killing the app.
+namespace {
+
+struct Sink {
+    int fd = -1;
+    bool direct = false;
+    char* buf = nullptr;
+    static constexpr size_t kCap = 8u << 20;
+    size_t used = 0;
+    uint64_t total = 0;
+
+    bool open_file(const std::string& path) {
+        direct = true;
+        fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_DIRECT, 0600);
+        if (fd < 0) {
+            direct = false;
+            fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        }
+        if (fd < 0) return false;
+        if (posix_memalign(reinterpret_cast<void**>(&buf), 4096, kCap) != 0) {
+            ::close(fd);
+            fd = -1;
+            return false;
+        }
+        return true;
+    }
+    bool flush_block(size_t n) {
+        if (!write_all(fd, buf, n)) return false;
+        if (!direct) {
+            ::fdatasync(fd);
+            ::posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
+        }
+        return true;
+    }
+    bool put(const void* p, size_t n) {
+        const char* c = static_cast<const char*>(p);
+        total += n;
+        while (n) {
+            const size_t k = n < kCap - used ? n : kCap - used;
+            std::memcpy(buf + used, c, k);
+            used += k, c += k, n -= k;
+            if (used == kCap) {
+                if (!flush_block(kCap)) return false;
+                used = 0;
+            }
+        }
+        return true;
+    }
+    // The tail, padded to a block, then the file cut to its real length.
+    bool finish() {
+        bool ok = true;
+        if (used) {
+            const size_t padded = (used + 4095) & ~size_t(4095);
+            std::memset(buf + used, 0, padded - used);
+            ok = flush_block(padded);
+        }
+        if (ok) ok = ::ftruncate(fd, off_t(total)) == 0 && ::fsync(fd) == 0;
+        ::posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
+        ::close(fd);
+        std::free(buf);
+        fd = -1;
+        buf = nullptr;
+        return ok;
+    }
+    void abandon() {
+        if (fd >= 0) ::close(fd);
+        std::free(buf);
+        fd = -1;
+        buf = nullptr;
+    }
+};
+
+}  // namespace
+
 // Every writable mapping inside the guest windows: the memory that is committed, whether or not it has been touched.
 static bool collect_rw(DumpStats& st) {
     const std::vector<Window> wins = {{kModuleBase, kModuleBase + 0x40000000ull, "modules"},
@@ -168,24 +267,6 @@ static bool collect_rw(DumpStats& st) {
     return true;
 }
 
-// A run of guest memory to the file in pieces, pushing the written pages out of the cache as it goes: a gigabyte of
-// dirty pages at once is memory pressure, and Android answers that by killing the app.
-static bool write_run(int fd, uint64_t addr, uint64_t len, uint64_t& unsynced) {
-    constexpr uint64_t kPiece = 16ull << 20, kSyncEvery = 64ull << 20;
-    uint64_t done = 0;
-    while (done < len) {
-        const uint64_t n = len - done < kPiece ? len - done : kPiece;
-        if (!write_all(fd, reinterpret_cast<const void*>(addr + done), n)) return false;
-        done += n, unsynced += n;
-        if (unsynced >= kSyncEvery) {
-            ::fdatasync(fd);
-            ::posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
-            unsynced = 0;
-        }
-    }
-    return true;
-}
-
 // The guest's memory to a file: every page of the guest windows that the kernel says is in RAM or in swap (untouched
 // pages are zero and are left out). Format: "P5RSNAP0", the layout (u64 count, then the window bases), then runs of
 // {u64 addr, u64 length, bytes} and a final {0, 0}. Guest threads must be frozen.
@@ -196,8 +277,8 @@ static bool dump_memory(const std::string& path, DumpStats& st) {
                                       {kStackBase, kStackBase + kStackSize, "stack"},
                                       {kKernelBase, kKernelBase + kKernelSize, "kernel"}};
     const std::string tmp = path + ".tmp";
-    int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
-    if (fd < 0) {
+    Sink out;
+    if (!out.open_file(tmp)) {
         log("snap: cannot create %s", tmp.c_str());
         return false;
     }
@@ -205,17 +286,16 @@ static bool dump_memory(const std::string& path, DumpStats& st) {
     FILE* maps = std::fopen("/proc/self/maps", "r");
     if (pm < 0 || !maps) {
         log("snap: cannot read /proc/self/{pagemap,maps}");
-        ::close(fd);
+        out.abandon();
         if (pm >= 0) ::close(pm);
         if (maps) std::fclose(maps);
         return false;
     }
-    bool ok = write_all(fd, "P5RSNAP0", 8);
+    bool ok = out.put("P5RSNAP0", 8);
     const uint64_t n = wins.size();
-    ok = ok && write_all(fd, &n, 8);
-    for (const Window& w : wins) ok = ok && write_all(fd, &w.lo, 8);
+    ok = ok && out.put(&n, 8);
+    for (const Window& w : wins) ok = ok && out.put(&w.lo, 8);
     const uint64_t kPage = 4096;
-    uint64_t unsynced = 0;
     std::vector<uint64_t> entries;
     char line[512];
     while (ok && std::fgets(line, sizeof line, maps)) {
@@ -247,19 +327,18 @@ static bool dump_memory(const std::string& path, DumpStats& st) {
                     j++;
                 }
                 const uint64_t addr = a + i * kPage, len = (j - i) * kPage;
-                ok = write_all(fd, &addr, 8) && write_all(fd, &len, 8) && write_run(fd, addr, len, unsynced);
+                ok = out.put(&addr, 8) && out.put(&len, 8) && out.put(reinterpret_cast<const void*>(addr), len);
                 st.bytes += len;
                 i = j;
             }
         }
     }
     const uint64_t zero[2] = {0, 0};
-    ok = ok && write_all(fd, zero, 16);
+    ok = ok && out.put(zero, 16);
     std::fclose(maps);
     ::close(pm);
-    if (ok) ok = ::fsync(fd) == 0;
-    ::posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
-    ::close(fd);
+    if (ok) ok = out.finish();
+    else out.abandon();
     if (ok) ok = ::rename(tmp.c_str(), path.c_str()) == 0;
     else ::unlink(tmp.c_str());
     return ok;
@@ -495,18 +574,18 @@ static bool capture(const std::string& dir) {
 }
 
 bool restore_requested() {
-    const std::string root = plat::data_root();
-    return access((root + "/snap.restore").c_str(), F_OK) == 0 && access((root + "/snap/state.bin").c_str(), F_OK) == 0 &&
-           access((root + "/snap/mem.bin").c_str(), F_OK) == 0;
+    const std::string root = plat::data_root(), dir = plat::internal_dir() + "/snap";
+    return access((root + "/snap.restore").c_str(), F_OK) == 0 && access((dir + "/state.bin").c_str(), F_OK) == 0 &&
+           access((dir + "/mem.bin").c_str(), F_OK) == 0;
 }
 
 bool restore_and_run() {
-    const std::string root = plat::data_root();
+    const std::string root = plat::data_root(), dir = plat::internal_dir() + "/snap";
     std::remove((root + "/snap.restore").c_str());  // a state that crashes must not trap the next start
     const auto t0 = std::chrono::steady_clock::now();
     std::string blob;
     {
-        FILE* f = std::fopen((root + "/snap/state.bin").c_str(), "rb");
+        FILE* f = std::fopen((dir + "/state.bin").c_str(), "rb");
         if (!f) return false;
         char buf[65536];
         size_t n;
@@ -549,7 +628,7 @@ bool restore_and_run() {
     for (auto& r : rw)
         if (!commit(r.first, r.second - r.first)) log("snap: restore: cannot make %llx-%llx writable", (unsigned long long)r.first, (unsigned long long)r.second);
     {
-        int fd = ::open((root + "/snap/mem.bin").c_str(), O_RDONLY);
+        int fd = ::open((dir + "/mem.bin").c_str(), O_RDONLY);
         if (fd < 0) { log("snap: restore: no memory file"); return false; }
         char head[8];
         uint64_t nwin = 0;
@@ -661,7 +740,7 @@ void start_watcher() {
             const std::string dump_trigger = plat::data_root() + "/snap.dump";
             if (access(dump_trigger.c_str(), F_OK) == 0) {
                 std::remove(dump_trigger.c_str());
-                if (!capture(plat::data_root() + "/snap")) log("snap: could not save a state");
+                if (!capture(plat::internal_dir() + "/snap")) log("snap: could not save a state");
                 continue;
             }
             if (access(trigger.c_str(), F_OK) != 0) continue;

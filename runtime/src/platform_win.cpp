@@ -568,3 +568,7 @@ int main() {
     }
     return 0;
 }
+
+namespace nx::plat {
+std::string internal_dir() { return data_root(); }
+}  // namespace nx::plat

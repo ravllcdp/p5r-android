@@ -268,6 +268,7 @@ bool make_dirs(const std::string& path) {
 void log_line(const char* line) { __android_log_write(ANDROID_LOG_INFO, nx::game::kInfo.id, line); }
 
 std::string data_root() { return g_root; }
+std::string internal_dir() { return g_internal_dir.empty() ? g_root : g_internal_dir; }
 
 // The device's locale (Settings > System > Languages) as "es-MX".
 std::string system_language() {

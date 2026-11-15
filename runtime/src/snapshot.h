@@ -9,12 +9,14 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 
 #include <nx/runtime.h>
 
 namespace nx {
 struct EventState;  // kernel.h
+struct KThread;
 }
 
 namespace nx::snap {
@@ -39,6 +41,11 @@ struct WaitScope {
     WaitScope(const WaitScope&) = delete;
     WaitScope& operator=(const WaitScope&) = delete;
 };
+
+// A thread that leaves a wait while frozen must not run: it holds here (still waiting, with the kernel lock released
+// by the wait) until thaw(). hold() is the same for a place where no lock is held (a sleep).
+void hold_waiting(std::unique_lock<std::recursive_mutex>& lk, KThread* self);
+void hold();
 
 // Noted on every call a guest thread makes into the runtime (nce_dispatch): what it is about to do, for a restored
 // thread to do it again.

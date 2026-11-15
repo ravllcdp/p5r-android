@@ -572,3 +572,7 @@ int main() {
         SDL_Delay(2);
     }
 }
+
+namespace nx::plat {
+std::string internal_dir() { return data_root(); }
+}  // namespace nx::plat

@@ -129,10 +129,13 @@ static bool block(std::unique_lock<std::recursive_mutex>& lk, KThread* self, int
     snap::WaitScope still;
     if (timeout_ns < 0) {
         self->cv.wait(lk, [&] { return self->wake; });
+        snap::hold_waiting(lk, self);
         return true;
     }
     auto until = std::chrono::steady_clock::now() + std::chrono::nanoseconds(timeout_ns);
-    return self->cv.wait_until(lk, until, [&] { return self->wake; });
+    const bool woke = self->cv.wait_until(lk, until, [&] { return self->wake; });
+    snap::hold_waiting(lk, self);
+    return woke;
 }
 
 // Wake a blocked thread (with g_k held).
@@ -369,10 +372,14 @@ static uint32_t svc_wait_synchronization(CPU& c, uint64_t handles, int32_t count
             return 0;
         }
         if (timeout == 0) return 0xEA01;
-        if (timeout < 0)
+        if (timeout < 0) {
             self->cv.wait(lk);
-        else if (self->cv.wait_until(lk, until) == std::cv_status::timeout && ready() < 0)
-            return 0xEA01;
+            snap::hold_waiting(lk, self);
+        } else {
+            const auto how = self->cv.wait_until(lk, until);
+            snap::hold_waiting(lk, self);
+            if (how == std::cv_status::timeout && ready() < 0) return 0xEA01;
+        }
     }
 }
 
@@ -630,6 +637,7 @@ static void svc_impl(CPU& c, uint32_t imm, uint64_t pc) {
                 g_sleep_calls.fetch_add(1, std::memory_order_relaxed);
                 snap::WaitScope still;
                 plat::sleep_ns(ns);
+                snap::hold();
                 return;
             }
             // Yield (0, -1, -2). On the Switch a thread yielding in a loop only takes time nobody else wants; here

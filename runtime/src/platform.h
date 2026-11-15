@@ -50,6 +50,8 @@ bool make_dirs(const std::string& path);
 // ---- output ----
 void log_line(const char* line);  // stderr / logcat
 std::string data_root();
+// The app's private storage (internal flash, no FUSE): where a saved state is written. The data root elsewhere.
+std::string internal_dir();
 std::string setting(const std::string& key);  // a player setting: config.txt (Android), NX_<KEY> (PC); "" if unset          // where private/ lives ("private" on PC, the app's external files dir on Android)
 // The device's language as "ll" or "ll-CC" (Android's locale, the Windows user locale, LANG); "" if unknown.
 std::string system_language();
