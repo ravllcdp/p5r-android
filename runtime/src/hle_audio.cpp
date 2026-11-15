@@ -32,6 +32,7 @@ struct Out {
     std::mutex lock;
     std::condition_variable cv;
     std::deque<uint64_t> queued, released;
+    std::deque<uint64_t> inflight;  // handed to the device (or the pacing timer), not given back yet
     std::shared_ptr<EventState> event = std::make_shared<EventState>();
     bool started = false;
     // statistics since the last log (every 1000 buffers)
@@ -57,6 +58,11 @@ void out_stats(uint64_t buf) {
 
 void release(void* ctx) {
     std::lock_guard lk(g_out.lock);
+    for (auto it = g_out.inflight.begin(); it != g_out.inflight.end(); ++it)
+        if (*it == reinterpret_cast<uint64_t>(ctx)) {
+            g_out.inflight.erase(it);
+            break;
+        }
     g_out.released.push_back(reinterpret_cast<uint64_t>(ctx));
     g_out.event->signaled = true;
     notify_all();
@@ -96,6 +102,7 @@ void player() {
             if (!ready()) continue;
             buf = g_out.queued.front();
             g_out.queued.pop_front();
+            g_out.inflight.push_back(buf);
             size = ld<uint64_t>(buf + 16);
         }
         if (device && plat::audio_submit(reinterpret_cast<const void*>(ld<uint64_t>(buf)), size,
@@ -125,7 +132,10 @@ static const bool g_reg_out_state = (snap::register_state(
         auto put = [&](const void* p, size_t n) { b.insert(b.end(), static_cast<const uint8_t*>(p), static_cast<const uint8_t*>(p) + n); };
         const uint8_t flags[2] = {g_player_started, g_out.started};
         put(flags, 2);
-        for (auto* q : {&g_out.queued, &g_out.released}) {
+        // What the device holds is played again after a restore: the game still waits to get those buffers back.
+        std::deque<uint64_t> again = g_out.inflight;
+        again.insert(again.end(), g_out.queued.begin(), g_out.queued.end());
+        for (auto* q : {&again, &g_out.released}) {
             const uint32_t n = uint32_t(q->size());
             put(&n, 4);
             for (uint64_t v : *q) put(&v, 8);
