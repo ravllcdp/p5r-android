@@ -118,18 +118,41 @@ public class OverlayService extends Service {
 
     private void buildOptions() {
         mOpts.clear();
-        mOpts.add(new Opt("NX_FPS_CAP",    "FPS",
-                new String[]{"30","60"}, new String[]{"30 fps","60 fps"}, 0));
-        mOpts.add(new Opt("RESOLUTION",    "Resolución",
+        mOpts.add(new Opt("language", "Idioma",
+                new String[]{"auto","en-US","es","fr","de","it","ja","ko","zh-Hans","zh-Hant"},
+                new String[]{"Auto","English","Español","Français","Deutsch","Italiano","日本語","한국어","简体中文","繁體中文"}, 0));
+        mOpts.add(new Opt("RESOLUTION", "Resolución",
                 new String[]{"360p","480p","720p","1080p"}, new String[]{"360p","480p","720p","1080p"}, 2));
-        mOpts.add(new Opt("GRAPHICS",      "Gráficos",
+        mOpts.add(new Opt("NX_STRETCH", "Pantalla completa",
+                new String[]{"0","1"}, new String[]{"Desactivada","Activada"}, 0));
+        mOpts.add(new Opt("NX_HUD_1080", "Interfaz",
+                new String[]{"0","1"}, new String[]{"720p","1080p"}, 0));
+        mOpts.add(new Opt("GRAPHICS", "Gráficos",
                 new String[]{"low","medium","high"}, new String[]{"Bajos","Medios","Altos"}, 0));
-        mOpts.add(new Opt("NX_SHADOWS",    "Sombras",
+        mOpts.add(new Opt("NX_FPS_CAP", "FPS",
+                new String[]{"30","60"}, new String[]{"30 fps","60 fps"}, 0));
+        mOpts.add(new Opt("NX_SHADOWS", "Sombras",
                 new String[]{"0","1"}, new String[]{"Desactivadas","Activadas"}, 0));
+        mOpts.add(new Opt("NX_SHOW_FPS", "Contador FPS",
+                new String[]{"0","1"}, new String[]{"Desactivado","Activado"}, 0));
         mOpts.add(new Opt("NX_TOUCH_SHOW", "Controles táctiles",
                 new String[]{"1","0"}, new String[]{"Activados","Desactivados"}, 0));
-        mOpts.add(new Opt("NX_SHOW_FPS",   "Contador FPS",
-                new String[]{"0","1"}, new String[]{"Desactivado","Activado"}, 0));
+        mOpts.add(new Opt("NX_TOUCH_SIZE", "Tamaño de botones",
+                new String[]{"80","100","125"}, new String[]{"Pequeño","Normal","Grande"}, 1));
+        mOpts.add(new Opt("NX_TOUCH_OPACITY", "Opacidad de botones",
+                new String[]{"50","85","100"}, new String[]{"Baja","Normal","Alta"}, 1));
+        mOpts.add(new Opt("NX_NO_CROWD", "Multitudes",
+                new String[]{"0","1"}, new String[]{"Activadas","Desactivadas"}, 0));
+        mOpts.add(new Opt("NX_DISABLE_BLOOM", "Post-procesado",
+                new String[]{"0","1"}, new String[]{"Activado","Desactivado"}, 0));
+        mOpts.add(new Opt("NX_GAMEPAD_LAYOUT", "Botones del mando",
+                new String[]{"0","1"}, new String[]{"Nintendo","Xbox / PC"}, 0));
+        mOpts.add(new Opt("NX_STICK_SENSITIVITY", "Sensib. palanca",
+                new String[]{"50","75","100","125","150","200"},
+                new String[]{"50%","75%","100%","125%","150%","200%"}, 2));
+        mOpts.add(new Opt("NX_CAMERA_SENSITIVITY", "Sensib. cámara",
+                new String[]{"50","75","100","125","150","200","250"},
+                new String[]{"50%","75%","100%","125%","150%","200%","250%"}, 2));
         loadConfig();
     }
 
@@ -243,7 +266,7 @@ public class OverlayService extends Service {
             @Override public void onClick(View v) {
                 mHandler.removeCallbacks(mHideIcon);
                 removeIconNow();
-                requestSave();
+                requestSave(null);
             }
         });
         WindowManager.LayoutParams sp = new WindowManager.LayoutParams(
@@ -291,7 +314,7 @@ public class OverlayService extends Service {
         return f.isFile() ? f : new File(getFilesDir(), "snap.old/state.bin");
     }
 
-    private void requestSave() {
+    private void requestSave(final Runnable onSaved) {
         final long asked = System.currentTimeMillis();
         try {
             File trigger = new File(android.os.Environment.getExternalStorageDirectory(), "Persona 5 Royal/snap.dump");
@@ -309,6 +332,7 @@ public class OverlayService extends Service {
                 File f = stateFile();
                 if (f.isFile() && f.lastModified() >= asked - 1000) {
                     showBanner("Partida guardada", 1);
+                    if (onSaved != null) onSaved.run();
                 } else if (System.currentTimeMillis() - asked > 25000) {
                     showBanner("No se pudo guardar la partida. El juego estaba ocupado. "
                             + "Prueba otra vez en unos segundos.", 2);
@@ -375,6 +399,63 @@ public class OverlayService extends Service {
     }
 
     // -----------------------------------------------------------------------
+    // Restart and load: the game's process ends, a helper process opens the home screen again
+    // -----------------------------------------------------------------------
+
+    private void applyAndRestart() {
+        // Save first, so nothing is lost; if it cannot be saved the game is left running (the banner says why).
+        requestSave(new Runnable() {
+            @Override public void run() { restartGame("fresh"); }
+        });
+    }
+
+    private void loadSavedGame() {
+        try {
+            new File(android.os.Environment.getExternalStorageDirectory(), "Persona 5 Royal/snap.restore").createNewFile();
+        } catch (Exception ignored) { }
+        restartGame("resume");
+    }
+
+    private void restartGame(String mode) {
+        showBanner(mode.equals("resume") ? "Cargando partida…" : "Reiniciando el juego…", 0);
+        startService(new Intent(this, RelaunchService.class)
+                .putExtra("pid", android.os.Process.myPid())
+                .putExtra("mode", mode));
+        mHandler.postDelayed(new Runnable() {
+            @Override public void run() { android.os.Process.killProcess(android.os.Process.myPid()); }
+        }, 900);
+    }
+
+    /** A wide slanted button: white slab with red ink (primary) or red slab with white ink; inverts on press. */
+    private TextView plate(String text, boolean white) {
+        TextView t = new TextView(this);
+        t.setText(text);
+        t.setAllCaps(true);
+        t.setGravity(Gravity.CENTER);
+        t.setTextSize(17);
+        t.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD_ITALIC));
+        t.setLetterSpacing(0.04f);
+        int ink = white ? RED : Color.WHITE, inkDown = white ? Color.WHITE : RED;
+        t.setTextColor(new android.content.res.ColorStateList(
+                new int[][]{{android.R.attr.state_pressed}, {}}, new int[]{inkDown, ink}));
+        t.setClickable(true);
+        StateListDrawable bg = new StateListDrawable();
+        if (white) {
+            bg.addState(new int[]{android.R.attr.state_pressed},
+                    new ShadowSlantDrawable(RED, Color.WHITE, dp(2), Color.WHITE, dp(4), dp(16)));
+            bg.addState(new int[]{},
+                    new ShadowSlantDrawable(Color.WHITE, Color.TRANSPARENT, 0, RED, dp(4), dp(16)));
+        } else {
+            bg.addState(new int[]{android.R.attr.state_pressed},
+                    new ShadowSlantDrawable(Color.WHITE, Color.TRANSPARENT, 0, RED, dp(4), dp(16)));
+            bg.addState(new int[]{},
+                    new ShadowSlantDrawable(RED, Color.TRANSPARENT, 0, Color.WHITE, dp(4), dp(16)));
+        }
+        t.setBackground(bg);
+        return t;
+    }
+
+    // -----------------------------------------------------------------------
     // Settings panel
     // -----------------------------------------------------------------------
 
@@ -382,7 +463,7 @@ public class OverlayService extends Service {
         int flags = WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
                   | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN;
         WindowManager.LayoutParams p = new WindowManager.LayoutParams(
-                dp(380), WindowManager.LayoutParams.MATCH_PARENT,
+                dp(420), WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 flags, PixelFormat.TRANSLUCENT);
         p.gravity = Gravity.END | Gravity.TOP;
@@ -398,12 +479,12 @@ public class OverlayService extends Service {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackground(new MenuBackDrawable(dp(40), dp(14)));
-        root.setPadding(dp(46), 0, 0, 0);
+        root.setPadding(0, 0, 0, 0);
 
         // Header: red slab with a white offset, title tilted with a hard black shadow, close badge
         FrameLayout header = new FrameLayout(this);
-        header.setBackground(new ShadowSlantDrawable(RED, Color.TRANSPARENT, 0, Color.WHITE, dp(4), dp(22)));
-        header.setPadding(dp(26), dp(10), dp(18), dp(14));
+        header.setBackground(new ShadowSlantDrawable(RED, Color.TRANSPARENT, 0, Color.WHITE, dp(4), dp(22)).flatLeft());
+        header.setPadding(dp(72), dp(10), dp(18), dp(14));
         header.setClipChildren(false);
 
         TextView title = new TextView(this);
@@ -441,23 +522,54 @@ public class OverlayService extends Service {
         last.setBackground(new ShadowSlantDrawable(Color.WHITE, Color.TRANSPARENT, 0, RED, dp(3), dp(10)));
         LinearLayout.LayoutParams lastLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        lastLp.setMargins(dp(8), dp(16), dp(16), 0);
+        lastLp.setMargins(dp(54), dp(16), dp(16), 0);
         root.addView(last, lastLp);
 
         TextView note = new TextView(this);
-        note.setText("Los cambios se aplican al reiniciar el juego.");
+        note.setText("Aplicar ajustes: se usan la próxima vez que abras el juego.\n"
+                + "Aplicar y reiniciar: guarda la partida, cierra el juego y lo abre de nuevo sin continuar.");
         note.setTextColor(Color.rgb(190, 190, 190));
-        note.setTextSize(12);
+        note.setTextSize(11);
         note.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.ITALIC));
-        note.setPadding(dp(14), dp(10), dp(16), dp(4));
+        note.setPadding(dp(60), dp(10), dp(16), dp(4));
         root.addView(note);
+
+        // Load the last save (asks twice: it throws away what has not been saved)
+        final boolean hasSave = stateFile().isFile();
+        final TextView load = plate(hasSave ? "Cargar partida" : "Sin partida guardada", hasSave);
+        if (!hasSave) load.setAlpha(0.55f);
+        final boolean[] armed = {false};
+        load.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                if (!hasSave) {
+                    showBanner("Aún no hay partida guardada. Toca el icono de guardar para crear una.", 2);
+                    return;
+                }
+                if (!armed[0]) {
+                    armed[0] = true;
+                    load.setText("Cargar y perder lo no guardado");
+                    mHandler.postDelayed(new Runnable() {
+                        @Override public void run() {
+                            if (armed[0]) { armed[0] = false; load.setText("Cargar partida"); }
+                        }
+                    }, 5000);
+                    return;
+                }
+                closePanel();
+                loadSavedGame();
+            }
+        });
+        LinearLayout.LayoutParams loadLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(50));
+        loadLp.setMargins(dp(54), dp(6), dp(16), dp(2));
+        root.addView(load, loadLp);
 
         // Options: one slanted strip each; the whole strip is the button
         ScrollView scroll = new ScrollView(this);
         scroll.setVerticalScrollBarEnabled(false);
         LinearLayout optList = new LinearLayout(this);
         optList.setOrientation(LinearLayout.VERTICAL);
-        optList.setPadding(dp(6), dp(6), dp(12), dp(8));
+        optList.setPadding(dp(52), dp(6), dp(12), dp(8));
 
         final android.content.res.ColorStateList labelInk = new android.content.res.ColorStateList(
                 new int[][]{{android.R.attr.state_pressed}, {}}, new int[]{RED, Color.WHITE});
@@ -485,7 +597,8 @@ public class OverlayService extends Service {
             lbl.setText(o.label);
             lbl.setAllCaps(true);
             lbl.setTextColor(labelInk);
-            lbl.setTextSize(17);
+            lbl.setTextSize(15);
+            lbl.setMaxLines(2);
             lbl.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD_ITALIC));
             lbl.setDuplicateParentStateEnabled(true);
             row.addView(lbl, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
@@ -494,7 +607,7 @@ public class OverlayService extends Service {
             val.setText(o.valLabels[o.pick]);
             val.setAllCaps(true);
             val.setTextColor(valueInk);
-            val.setTextSize(14);
+            val.setTextSize(13);
             val.setGravity(Gravity.CENTER);
             val.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD_ITALIC));
             val.setDuplicateParentStateEnabled(true);
@@ -504,7 +617,7 @@ public class OverlayService extends Service {
             valBg.addState(new int[]{},
                     new ShadowSlantDrawable(RED, Color.TRANSPARENT, 0, Color.TRANSPARENT, 0, dp(8)));
             val.setBackground(valBg);
-            row.addView(val, new LinearLayout.LayoutParams(dp(124), dp(34)));
+            row.addView(val, new LinearLayout.LayoutParams(dp(140), dp(34)));
 
             row.setOnClickListener(new View.OnClickListener() {
                 @Override public void onClick(View v) {
@@ -526,42 +639,39 @@ public class OverlayService extends Service {
         root.addView(scroll, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
 
-        // Apply: white slab, red ink, red offset; inverts on press
-        TextView save = new TextView(this);
-        save.setText("Aplicar ajustes");
-        save.setAllCaps(true);
-        save.setGravity(Gravity.CENTER);
-        save.setTextSize(20);
-        save.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD_ITALIC));
-        save.setLetterSpacing(0.05f);
-        save.setTextColor(new android.content.res.ColorStateList(
-                new int[][]{{android.R.attr.state_pressed}, {}}, new int[]{Color.WHITE, RED}));
-        save.setClickable(true);
-        StateListDrawable saveBg = new StateListDrawable();
-        saveBg.addState(new int[]{android.R.attr.state_pressed},
-                new ShadowSlantDrawable(RED, Color.WHITE, dp(2), Color.WHITE, dp(4), dp(16)));
-        saveBg.addState(new int[]{},
-                new ShadowSlantDrawable(Color.WHITE, Color.TRANSPARENT, 0, RED, dp(4), dp(16)));
-        save.setBackground(saveBg);
-        save.setOnClickListener(new View.OnClickListener() {
+        TextView apply = plate("Aplicar ajustes", true);
+        apply.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
                 saveConfig();
                 android.widget.Toast.makeText(OverlayService.this,
-                        "Ajustes aplicados. Reinicia el juego para verlos.",
+                        "Ajustes aplicados. Se usarán la próxima vez que abras el juego.",
                         android.widget.Toast.LENGTH_LONG).show();
                 closePanel();
             }
         });
-        LinearLayout.LayoutParams saveLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(58));
-        saveLp.setMargins(dp(4), dp(6), dp(16), dp(18));
-        root.addView(save, saveLp);
+        LinearLayout.LayoutParams applyLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(50));
+        applyLp.setMargins(dp(50), dp(6), dp(16), dp(2));
+        root.addView(apply, applyLp);
+
+        TextView restart = plate("Aplicar y reiniciar", false);
+        restart.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                saveConfig();
+                closePanel();
+                applyAndRestart();
+            }
+        });
+        LinearLayout.LayoutParams restartLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(50));
+        restartLp.setMargins(dp(50), dp(4), dp(16), dp(16));
+        root.addView(restart, restartLp);
 
         mPanelRoot = root;
         mWm.addView(mPanelRoot, panelParams());
 
         // Entrance: the panel slides in, then the strips one after another
-        root.setTranslationX(dp(400));
+        root.setTranslationX(dp(440));
         root.animate().translationX(0f).setDuration(200).start();
         for (int i = 0; i < rows.size(); i++) {
             rows.get(i).animate().alpha(1f).translationX(0f).setStartDelay(140 + i * 45L).setDuration(180).start();
@@ -571,8 +681,13 @@ public class OverlayService extends Service {
     private void closePanel() {
         if (!mPanelOpen) return;
         mPanelOpen = false;
-        removeQuiet(mPanelRoot);
+        final View panel = mPanelRoot;
         mPanelRoot = null;
+        if (panel == null) return;
+        panel.animate().cancel();
+        panel.animate().translationX(dp(440)).setDuration(190).withEndAction(new Runnable() {
+            @Override public void run() { removeQuiet(panel); }
+        }).start();
     }
 
     // -----------------------------------------------------------------------
@@ -650,7 +765,7 @@ public class OverlayService extends Service {
     }
 
     /** The panel's back: black with a halftone fading down, a dark red star, and the left edge cut on a red and white diagonal. */
-    private static final class MenuBackDrawable extends Drawable {
+    static final class MenuBackDrawable extends Drawable {
         private final Paint mFill = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint mDots = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint mStar = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -723,13 +838,17 @@ public class OverlayService extends Service {
     }
 
     /** A parallelogram with a hard offset copy behind it (the game's plates). The shape leaves room inside its bounds for the offset. */
-    private static final class ShadowSlantDrawable extends Drawable {
+    static final class ShadowSlantDrawable extends Drawable {
         private final Paint mFill = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint mStroke = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint mShadow = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Path mPath = new Path();
         private final int mSkew, mOff;
         private final boolean mHasStroke, mHasShadow;
+        private boolean mFlatLeft;
+
+        /** The left edge stays straight (the plate runs off the screen edge). */
+        ShadowSlantDrawable flatLeft() { mFlatLeft = true; return this; }
 
         ShadowSlantDrawable(int fill, int stroke, int strokeW, int shadow, int off, int skew) {
             mFill.setColor(fill);
@@ -748,7 +867,7 @@ public class OverlayService extends Service {
         private void shape(float w, float h, float dx, float dy) {
             float s = Math.min(mSkew, w / 3f);
             mPath.reset();
-            mPath.moveTo(dx + s, dy); mPath.lineTo(dx + w, dy);
+            mPath.moveTo(mFlatLeft ? dx : dx + s, dy); mPath.lineTo(dx + w, dy);
             mPath.lineTo(dx + w - s, dy + h); mPath.lineTo(dx, dy + h);
             mPath.close();
         }
@@ -797,14 +916,14 @@ public class OverlayService extends Service {
 
         BadgeView(android.content.Context ctx) {
             super(ctx);
-            mFillP.setColor(RED);
+            mFillP.setColor(BLACK);
             mFillP.setStyle(Paint.Style.FILL);
-            mLineP.setColor(Color.WHITE);
+            mLineP.setColor(RED);
             mLineP.setStyle(Paint.Style.STROKE);
-            mLineP.setStrokeWidth(dp(2));
-            mStarP.setColor(BLACK);
+            mLineP.setStrokeWidth(dp(3));
+            mStarP.setColor(Color.WHITE);
             mStarP.setStyle(Paint.Style.FILL);
-            mStarLineP.setColor(Color.WHITE);
+            mStarLineP.setColor(Color.TRANSPARENT);
             mStarLineP.setStyle(Paint.Style.STROKE);
             mStarLineP.setStrokeWidth(dp(1));
             setClickable(true);

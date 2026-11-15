@@ -76,6 +76,12 @@
         <service
             android:name=".OverlayService"
             android:exported="false" />
+        <!-- Opens the game again after its process is gone (restart, load a saved game): its own process, so it
+             outlives the one it waits for. -->
+        <service
+            android:name=".RelaunchService"
+            android:process=":relaunch"
+            android:exported="false" />
         <provider
             android:name=".LogProvider"
             android:authorities="io.github.p5rrecomp.logprovider"

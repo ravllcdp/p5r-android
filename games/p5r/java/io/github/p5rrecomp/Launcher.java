@@ -388,6 +388,13 @@ public class Launcher extends Activity {
 
     /** Opens the game; when a saved state is there, asks first whether to go on from it. */
     private void launchGame(final boolean finishAfter) {
+        // Opened again by the in-game menu (restart, load a saved game): do as it said, without asking.
+        String mode = getIntent() != null ? getIntent().getStringExtra("p5r_start") : null;
+        if (mode != null) {
+            getIntent().removeExtra("p5r_start");
+            startGameActivity("resume".equals(mode), finishAfter);
+            return;
+        }
         long when = savedStateTime();
         if (when == 0) {
             startGameActivity(false, finishAfter);
@@ -395,22 +402,13 @@ public class Launcher extends Activity {
         }
         CharSequence ago = android.text.format.DateUtils.getRelativeTimeSpanString(
                 when, System.currentTimeMillis(), android.text.format.DateUtils.MINUTE_IN_MILLIS);
-        new android.app.AlertDialog.Builder(this)
-                .setTitle(t("¿Continuar la partida guardada?", "Continue your saved game?"))
-                .setMessage(Lang.f("Guardado %s. Si empiezas de nuevo, el próximo guardado automático sustituirá este.",
-                        "Saved %s. If you start over, the next automatic save will replace this one.", ago.toString()))
-                .setCancelable(false)
-                .setPositiveButton(t("Continuar partida", "Continue game"), new android.content.DialogInterface.OnClickListener() {
-                    @Override public void onClick(android.content.DialogInterface d, int w) {
-                        startGameActivity(true, finishAfter);
-                    }
-                })
-                .setNegativeButton(t("Empezar de nuevo", "Start over"), new android.content.DialogInterface.OnClickListener() {
-                    @Override public void onClick(android.content.DialogInterface d, int w) {
-                        startGameActivity(false, finishAfter);
-                    }
-                })
-                .show();
+        P5Dialog.show(this,
+                t("¿Continuar partida?", "Continue game?"),
+                Lang.f("Hay un guardado de %s. Si empiezas de nuevo, el próximo guardado automático lo sustituirá.",
+                        "There is a save from %s. If you start over, the next automatic save will replace it.", ago.toString()),
+                t("Continuar partida", "Continue game"), t("Empezar de nuevo", "Start over"),
+                new Runnable() { @Override public void run() { startGameActivity(true, finishAfter); } },
+                new Runnable() { @Override public void run() { startGameActivity(false, finishAfter); } });
     }
 
     @Override
