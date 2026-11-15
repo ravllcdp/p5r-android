@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
 
 #include <nx/runtime.h>
 
@@ -33,6 +34,19 @@ struct WaitScope {
     WaitScope(const WaitScope&) = delete;
     WaitScope& operator=(const WaitScope&) = delete;
 };
+
+// Noted on every call a guest thread makes into the runtime (nce_dispatch): what it is about to do, for a restored
+// thread to do it again.
+void note_call(CPU& c, uint32_t code, int depth);
+
+// Events that live in the runtime (vsync, audio frame): a restored handle must point at this process's, not a copy.
+void register_event(const char* name, std::shared_ptr<EventState> state);
+
+// At boot: true if a restore was asked for (snap.restore in the data root) and a state is there to restore.
+bool restore_requested();
+// Puts a saved state back and runs the main thread on the calling thread until it returns. False (nothing touched)
+// if the state does not fit this process; boot then goes on normally.
+bool restore_and_run();
 
 // Debug trigger: a file named snap.freeze in the data root (its text: how many ms to stay frozen, default 3000)
 // freezes, holds and thaws, and logs how long each step took. Replaced by the overlay button in a later step.

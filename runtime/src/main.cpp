@@ -261,6 +261,14 @@ void boot() {
         set_tls_template(tdata, tdata_end);
         log("main .tdata: %llu bytes", (unsigned long long)(tdata_end - tdata));
     }
+    if (snap::restore_requested()) {
+        log("snap: restoring a saved state instead of starting the game");
+        if (snap::restore_and_run()) {
+            log("snap: the restored game ended");
+            return;
+        }
+        log("snap: the state could not be restored here, starting the game normally");
+    }
     uint32_t main_thread = create_main_thread(16ull << 20);
     CPU& c = current_cpu();
     c.x[0] = main_thread;

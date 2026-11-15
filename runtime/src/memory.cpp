@@ -2,6 +2,7 @@
 // for svcQueryMemory.
 #include <map>
 #include <mutex>
+#include <vector>
 
 #include <nx/runtime.h>
 
@@ -166,6 +167,29 @@ VmInfo vm_query(uint64_t addr) {
     uint64_t gap_start = addr < kAddressSpaceBase ? 0 : kAddressSpaceBase;
     if (addr < kAddressSpaceBase) gap_end = kAddressSpaceBase;
     return {gap_start, gap_end - gap_start, kMemFree, 0};
+}
+
+std::vector<VmInfo> vm_export() {
+    std::lock_guard lk(g_vm_lock);
+    std::vector<VmInfo> v;
+    for (const auto& kv : g_vm) v.push_back(kv.second);
+    return v;
+}
+
+void vm_import(const std::vector<VmInfo>& blocks) {
+    std::lock_guard lk(g_vm_lock);
+    g_vm.clear();
+    for (const VmInfo& b : blocks) g_vm[b.addr] = b;
+}
+
+uint64_t kernel_next_get() {
+    std::lock_guard lk(g_vm_lock);
+    return g_kernel_next;
+}
+
+void kernel_next_set(uint64_t next) {
+    std::lock_guard lk(g_vm_lock);
+    g_kernel_next = next;
 }
 
 }  // namespace nx

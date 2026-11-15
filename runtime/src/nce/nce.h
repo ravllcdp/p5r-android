@@ -35,6 +35,14 @@ void prepare_module(const LoadedModule& m);
 // Runs guest code at `target` on context c until it returns (call(), for every address outside the thunks).
 void enter(CPU& c, uint64_t target);
 
+// Quick resume: makes the call a frozen thread was about to make (code as nce_dispatch gets it, x0..x7 as they were),
+// then continues the guest after it, with every other register as saved in c. Returns when the guest returns to the
+// stub nce_enter() would have returned to.
+void resume(CPU& c, uint32_t code, const uint64_t* args);
+
+// How many nce_enter frames the calling host thread has open (1: a thread's entry, 2: the main thread under nnMain).
+int depth();
+
 // Replaces the guest function at `addr` (a module's text) with fn, called as an HLE function. Returns an address
 // where the original function can still be called with call() (its first instruction moved, then a branch back),
 // 0 if the function's first instruction cannot be moved.

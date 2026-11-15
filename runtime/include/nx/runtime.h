@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <vector>
 #include <string>
 
 #include <nx/cpu.h>
@@ -80,6 +81,11 @@ struct VmInfo {
     uint32_t state, perm;
 };
 VmInfo vm_query(uint64_t addr);
+// Quick resume (snapshot.cpp): the whole map, put back as it was, and the kernel allocator's cursor.
+std::vector<VmInfo> vm_export();
+void vm_import(const std::vector<VmInfo>& blocks);
+uint64_t kernel_next_get();
+void kernel_next_set(uint64_t next);
 
 // ---- modules --------------------------------------------------------------------------------------------------
 

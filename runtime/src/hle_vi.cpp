@@ -10,6 +10,7 @@
 
 #include "kernel.h"
 #include "platform.h"
+#include "snapshot.h"
 
 namespace nx {
 
@@ -56,6 +57,7 @@ void nv_noop(CPU&) {}
 // The display's vsync: a kernel event a host thread signals every 1/60 s. The game gets it as an nn::os
 // SystemEvent (AttachSystemEvent with our read/write handles, auto clear: each wait consumes one vsync).
 std::shared_ptr<EventState> g_vsync = std::make_shared<EventState>();
+const bool g_reg_vsync = (snap::register_event("vsync", g_vsync), true);
 
 void vsync_thread() {
     plat::set_thread_name("vsync");

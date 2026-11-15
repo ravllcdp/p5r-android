@@ -43,6 +43,7 @@ struct KThread : KObject {
     std::atomic<int> snap_wait{0};
     uint32_t snap_code = 0;
     uint64_t snap_args[8] = {};
+    int snap_depth = 0;  // nested nce_enter frames on its host thread when it made that call
     bool signaled() const override { return exited; }
 };
 
@@ -65,6 +66,27 @@ struct KTransferMemory : KObject {
     uint64_t addr = 0, size = 0;
 };
 
+// Quick resume (snapshot.cpp, kernel.cpp): a thread as it was frozen, and the handle table around it.
+struct KThreadImage {
+    uint32_t handle = 0;
+    uint64_t id = 0, tls = 0, entry = 0;
+    int32_t prio = 44, core = 0;
+    uint32_t code = 0;
+    uint64_t args[8] = {};
+    CPU ctx{};
+};
+struct KernelExport {
+    uint32_t next_handle = 0;
+    uint64_t next_thread_id = 0, heap_size = 0;
+    std::vector<std::pair<uint32_t, std::shared_ptr<KObject>>> objects;
+};
+KernelExport kernel_export();
+void kernel_set_counters(uint32_t next_handle, uint64_t next_thread_id, uint64_t heap_size);
+std::shared_ptr<KThread> kernel_adopt_thread(const KThreadImage& im);
+void kernel_adopt_object(uint32_t handle, std::shared_ptr<KObject> o);
+void kernel_start_restored(KThread* t);  // on a new host thread
+void kernel_run_restored(KThread* t);    // on the calling thread (the main thread's)
+
 uint32_t handle_add(std::shared_ptr<KObject> o);
 std::shared_ptr<KObject> handle_get(uint32_t h);
 void handle_close(uint32_t h);
@@ -83,6 +105,9 @@ void set_tls_template(uint64_t start, uint64_t end);
 void init_tls_block(uint64_t block);
 
 // ipc.cpp
+bool ipc_session_info(const KObject& o, std::string& name, bool& domain);
+std::shared_ptr<KObject> ipc_make_session(const std::string& name, bool domain);
+bool ipc_service_known(const std::string& name);
 uint32_t ipc_connect(const char* port, uint64_t* out_handle);
 uint32_t ipc_request(CPU& c, uint32_t handle, uint64_t buf, uint64_t size);
 uint32_t map_shared_memory(KSharedMemory& s, uint64_t addr, uint64_t size);

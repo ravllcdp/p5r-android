@@ -69,6 +69,24 @@ struct SmService : Service {
 
 }  // namespace
 
+// Quick resume (snapshot.cpp): the top-level sessions are rebuilt from the name of their service.
+bool ipc_session_info(const KObject& o, std::string& name, bool& domain) {
+    const auto* s = dynamic_cast<const KSession*>(&o);
+    if (!s || !s->svc) return false;
+    name = s->svc->name;
+    domain = s->domain;
+    return true;
+}
+
+std::shared_ptr<KObject> ipc_make_session(const std::string& name, bool domain) {
+    auto s = std::make_shared<KSession>();
+    s->svc = name == "sm:" ? std::make_shared<SmService>() : make_service(name);
+    s->domain = domain;
+    return s;
+}
+
+bool ipc_service_known(const std::string& name) { return name == "sm:" || factories().count(name) != 0; }
+
 uint32_t ipc_connect(const char* port, uint64_t* out_handle) {
     std::string p = port;
     log("ConnectToNamedPort(%s)", p.c_str());

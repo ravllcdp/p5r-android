@@ -392,6 +392,78 @@ static void thread_main(void* p) {
     notify_all();
 }
 
+// ---- quick resume ---------------------------------------------------------------------------------------------
+
+KernelExport kernel_export() {
+    std::lock_guard lk(g_k);
+    KernelExport e;
+    e.next_handle = g_next_handle;
+    e.next_thread_id = g_next_thread_id.load();
+    e.heap_size = g_heap_size;
+    for (auto& kv : g_handles) e.objects.emplace_back(kv.first, kv.second);
+    return e;
+}
+
+void kernel_set_counters(uint32_t next_handle, uint64_t next_thread_id, uint64_t heap_size) {
+    std::lock_guard lk(g_k);
+    g_next_handle = next_handle;
+    g_next_thread_id = next_thread_id;
+    g_heap_size = heap_size;
+}
+
+std::shared_ptr<KThread> kernel_adopt_thread(const KThreadImage& im) {
+    auto t = std::make_shared<KThread>();
+    t->self = t;
+    t->id = im.id;
+    t->entry = im.entry;
+    t->prio = im.prio;
+    t->core = im.core;
+    t->tls = im.tls;
+    t->ctx = im.ctx;
+    t->handle = im.handle;
+    t->snap_code = im.code;
+    for (int i = 0; i < 8; i++) t->snap_args[i] = im.args[i];
+    std::lock_guard lk(g_k);
+    g_handles[im.handle] = t;
+    std::lock_guard al(g_all_lock);
+    g_all.push_back(t);
+    return t;
+}
+
+void kernel_adopt_object(uint32_t handle, std::shared_ptr<KObject> o) {
+    std::lock_guard lk(g_k);
+    g_handles[handle] = std::move(o);
+}
+
+#if NX_NCE
+static void restored_body(KThread* t) {
+    t_self = t;
+    t->host_tid = plat::current_thread_id();
+    char name[16];
+    std::snprintf(name, sizeof name, "g%llx", (unsigned long long)t->id);
+    plat::set_thread_name(name);
+    log("snap: thread %x (id %llu) resumes with %s", t->handle, (unsigned long long)t->id,
+        (t->snap_code & 0x80000000u) ? "an svc" : (t->snap_code & 0x40000000u) ? "a hook" : "an HLE call");
+    nce::resume(t->ctx, t->snap_code, t->snap_args);
+    log("snap: thread %x (id %llu) returned from its entry", t->handle, (unsigned long long)t->id);
+    std::lock_guard lk(g_k);
+    t->exited = true;
+    notify_all();
+}
+static void restored_main(void* p) { restored_body(static_cast<KThread*>(p)); }
+void kernel_start_restored(KThread* t) {
+    t->started = true;
+    plat::start_thread(restored_main, t, 64ull << 20);
+}
+void kernel_run_restored(KThread* t) {
+    t->started = true;
+    restored_body(t);
+}
+#else
+void kernel_start_restored(KThread*) {}
+void kernel_run_restored(KThread*) {}
+#endif
+
 static std::shared_ptr<KThread> new_thread(uint64_t entry, uint64_t arg, uint64_t sp, int prio, int core) {
     auto t = std::make_shared<KThread>();
     t->self = t;

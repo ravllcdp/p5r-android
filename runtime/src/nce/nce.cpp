@@ -697,6 +697,9 @@ void prepare_module(const LoadedModule& m) {
     g_regions[m.base] = std::move(regions);
 }
 
+namespace { thread_local int t_depth = 0; }
+int depth() { return t_depth; }
+
 void enter(CPU& c, uint64_t target) {
     Block* b = block();
     CPU* prev = b->ctx;
@@ -705,8 +708,36 @@ void enter(CPU& c, uint64_t target) {
     c.x[30] = g_return;
     b->target = target;
     refresh(b);
+    t_depth++;
     nce_enter(tp_of(b));
+    t_depth--;
     c.x[30] = lr;
+    b->ctx = prev;
+}
+
+void resume(CPU& c, uint32_t code, const uint64_t* args) {
+    Block* b = block();
+    CPU* prev = b->ctx;
+    b->ctx = &c;
+    for (int i = 0; i < 8; i++) c.x[i] = args[i];
+    refresh(b);
+    uint64_t target;
+    if (code & 0x80000000u) {
+        const SvcSite& s = g_svc_sites[code & 0xFFFF];
+        svc(c, s.imm, s.pc);
+        target = s.pc + 4;
+    } else if (code & 0x40000000u) {
+        g_hooks[code & 0xFFFF](c);
+        target = c.x[30];
+    } else {
+        hle_invoke(c, code);
+        target = c.x[30];
+    }
+    b->target = target;  // x30 stays as the guest had it: the guest's own frames return to nce_return as before
+    refresh(b);
+    t_depth++;
+    nce_enter(tp_of(b));
+    t_depth--;
     b->ctx = prev;
 }
 
@@ -788,6 +819,7 @@ extern "C" void nce_dispatch(uint64_t tp, uint32_t code) {
     using namespace nx::nce;
     Block* b = block_of(tp);
     CPU& c = *b->ctx;
+    snap::note_call(c, code, nx::nce::depth());
     if (snap::g_freeze.load(std::memory_order_relaxed)) snap::park(c, code);
     if (code & 0x80000000u) {
         const SvcSite& s = g_svc_sites[code & 0xFFFF];

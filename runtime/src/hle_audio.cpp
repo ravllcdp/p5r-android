@@ -18,6 +18,7 @@
 #include "diagnostics.h"
 #include "kernel.h"
 #include "platform.h"
+#include "snapshot.h"
 
 namespace nx {
 
@@ -217,6 +218,7 @@ constexpr uint64_t kExecuteRendering = 0x20cac8;   // sdk: AudioRendererImpl::Ex
 // kernel event behind it), so the SystemEvent the game waits on is ours: an InterProcessEventType keeps its
 // readable handle at +0x14 and its writable one at +0x18 (nn::os::detail::WaitInterProcessEvent, sdk+1305a0).
 std::shared_ptr<EventState> g_audio_frame = std::make_shared<EventState>();
+const bool g_reg_audio_frame = (snap::register_event("audio_frame", g_audio_frame), true);
 
 std::mutex g_renderers_lock;
 std::vector<uint64_t> g_renderers;  // AudioRendererImpl*
