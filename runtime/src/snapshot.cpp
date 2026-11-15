@@ -804,6 +804,7 @@ bool restore_and_run() {
             } else {
                 log("snap: restore: no GPU file; images start empty");
             }
+            start_watcher();
             for (auto& th : *x->live) kernel_start_restored(th.get());
         },
         &ctx);
