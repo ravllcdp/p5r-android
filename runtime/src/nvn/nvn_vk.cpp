@@ -655,6 +655,12 @@ std::shared_ptr<const DeferredValues> g_deferred;  // the submit being replayed 
 }
 const DeferredValues* current_deferred() { return g_deferred.get(); }
 
+// Quick resume: Vulkan is made on the first submit; a restore puts images in it before any.
+bool vk_ensure_ready() {
+    std::lock_guard lk(g_gpu);
+    return init();
+}
+
 void gpu_submit(const std::vector<std::shared_ptr<CmdList>>& lists, std::shared_ptr<const DeferredValues> deferred) {
     g_deferred = std::move(deferred);
     std::lock_guard lk(g_gpu);

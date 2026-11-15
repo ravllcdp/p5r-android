@@ -14,6 +14,7 @@ namespace nx::nvn {
 
 using namespace vk;
 
+bool vk_ensure_ready();
 VkQueue vk_queue();
 uint32_t vk_queue_family();
 
@@ -244,6 +245,10 @@ bool gpu_state_restore(CPU&, const std::function<bool(void*, size_t)>& in) {
     char magic[8];
     uint32_t n = 0;
     if (!in(magic, 8) || std::memcmp(magic, "P5RGPU01", 8) != 0 || !in(&n, 4)) return false;
+    if (!vk_ensure_ready()) {
+        log("snap: restore: gpu: Vulkan did not start");
+        return false;
+    }
     Staging st;
     if (!st.init()) return false;
     uint32_t put = 0, skipped = 0;
