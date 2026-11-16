@@ -164,6 +164,7 @@ struct Staging {
         return p_vkQueueSubmit(vk_queue(), 1, &si, fence) == VK_SUCCESS;
     }
     bool wait() { return p_vkWaitForFences(vk_device(), 1, &fence, VK_TRUE, UINT64_MAX) == VK_SUCCESS; }
+    bool submit_and_wait() { return submit() && wait(); }  // restoring: the image must be whole before the game runs
 };
 
 VkBufferImageCopy copy_of(const GpuImage& g, const Region& r) {
