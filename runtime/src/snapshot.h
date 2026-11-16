@@ -77,6 +77,9 @@ bool restore_and_run();
 // seconds, 0 = never, default 600) and whenever the app is paused (home, app switcher, screen off), when the game holds
 // still anyway. set_paused is called from the platform's lifecycle events.
 void set_paused(bool paused);
+// Asks the watcher for a save as soon as it can (not within 20 s of another): the system is short of memory and may end
+// the process within seconds. `why` must stay valid (a literal).
+void request_save(const char* why);
 
 // Debug trigger: a file named snap.freeze in the data root (its text: how many ms to stay frozen, default 3000)
 // freezes, holds and thaws, and logs how long each step took. Replaced by the overlay button in a later step.

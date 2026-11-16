@@ -25,6 +25,7 @@
 #include <nx/runtime.h>
 
 #include "platform.h"
+#include "snapshot.h"
 
 namespace nx::plat {
 
@@ -70,6 +71,17 @@ uint64_t kb_field(const char* path, const char* key) {
     return kb;
 }
 
+// Microseconds the system spent stalled on memory (some task waiting for it), the counter lmkd's own triggers use:
+// /proc/pressure/memory, first line. 0 when it cannot be read.
+uint64_t psi_some_total_us() {
+    FILE* f = std::fopen("/proc/pressure/memory", "r");
+    if (!f) return 0;
+    unsigned long long total = 0;
+    if (std::fscanf(f, "some avg10=%*f avg60=%*f avg300=%*f total=%llu", &total) != 1) total = 0;
+    std::fclose(f);
+    return total;
+}
+
 struct Read {
     std::atomic<uint64_t> begin{0}, end{0};
 };
@@ -102,7 +114,7 @@ void start_memory_guard() {
     }
     log("memory: guard at %.1f GB (the phone has %.1f GB), source %s", gb, ram, mode.c_str());
     std::thread([limit, gb, mode] {
-        uint64_t ticks = 0, peak = 0, read_ns = 0, read_max = 0;
+        uint64_t ticks = 0, peak = 0, read_ns = 0, read_max = 0, psi_ring[4] = {}, last_emergency = 0;
         bool smaps = mode == "smaps" || mode == "ab";
         for (;;) {
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
@@ -118,6 +130,18 @@ void start_memory_guard() {
             r.end = t1;
             read_ns += t1 - t0, read_max = std::max(read_max, t1 - t0);
             if (f > peak) peak = f;
+            // Memory pressure of the whole phone (other apps, the page cache): lmkd ends processes when it lasts, ours
+            // included, whatever it uses. Over a second, 100 ms or more stalled (lmkd acts at 70 ms) saves a state now.
+            if (const uint64_t psi = psi_some_total_us(); psi) {
+                psi_ring[ticks % 4] = psi;
+                const uint64_t old = psi_ring[(ticks + 1) % 4];
+                if (ticks >= 4 && old && psi - old >= 100000 && t1 - last_emergency >= 120ull * 1000000000ull) {
+                    last_emergency = t1;
+                    log("memory: the system stalled %llu ms on memory in the last second: saving a state now",
+                        (unsigned long long)((psi - old) / 1000));
+                    nx::snap::request_save("memory pressure in the system");
+                }
+            }
             // The first minute, every 2 s: the low-memory kills at start-up happen before the 30 s line is ever written.
             if (ticks < 240 && ticks % 8 == 0)
                 log("memory: start-up %llu s: %llu MB, MemAvailable %llu MB, SwapFree %llu MB", (unsigned long long)(ticks / 4),

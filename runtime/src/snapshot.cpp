@@ -1003,10 +1003,16 @@ bool restore_and_run() {
 
 static std::atomic<bool> g_save_requested{false};
 static std::atomic<bool> g_paused{false};
+static std::atomic<const char*> g_save_why{"the app paused"};
 
 void set_paused(bool paused) {
     g_paused.store(paused);
-    if (paused) g_save_requested.store(true);
+    if (paused) request_save("the app paused");
+}
+
+void request_save(const char* why) {
+    g_save_why.store(why);
+    g_save_requested.store(true);
 }
 
 void start_watcher() {
@@ -1047,7 +1053,7 @@ void start_watcher() {
             const bool recent = now - last < std::chrono::seconds(20);
             if (g_save_requested.load() && !recent) {
                 g_save_requested.store(false);
-                save("the app paused");
+                save(g_save_why.load());
                 continue;
             }
             if (auto_seconds > 0 && !g_paused.load() && now - last >= std::chrono::seconds(auto_seconds)) {
