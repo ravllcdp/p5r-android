@@ -133,9 +133,9 @@ static bool block(std::unique_lock<std::recursive_mutex>& lk, KThread* self, int
         return true;
     }
     auto until = std::chrono::steady_clock::now() + std::chrono::nanoseconds(timeout_ns);
-    const bool woke = self->cv.wait_until(lk, until, [&] { return self->wake; });
-    snap::hold_waiting(lk, self);
-    return woke;
+    self->cv.wait_until(lk, until, [&] { return self->wake; });
+    snap::hold_waiting(lk, self);  // releases the kernel lock while frozen: a signal can hand us the mutex meanwhile
+    return self->wake;             // so the answer is read after the hold, not at the timeout (else: mutex held, timeout returned)
 }
 
 // Wake a blocked thread (with g_k held).
