@@ -571,7 +571,7 @@ void on_cmd(android_app* app, int32_t cmd) {
             nx::snap::set_paused(true);  // the moment to save a state: the game is still, and may not come back
             break;
         case APP_CMD_LOW_MEMORY:  // the system is short of memory: save now, it may end the process next
-            nx::snap::request_save("the system asked to free memory");
+            nx::snap::request_save_memory("the system asked to free memory");
             break;
         case APP_CMD_RESUME:
             audio_pause(false);

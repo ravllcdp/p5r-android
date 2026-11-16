@@ -88,12 +88,15 @@ public class OverlayService extends Service {
         mWm = (WindowManager) getSystemService(WINDOW_SERVICE);
         buildOptions();
         addListenView();
+        mHandler.postDelayed(mPoll, 1000);
         return START_STICKY;
     }
 
     @Override
     public void onDestroy() {
         mHandler.removeCallbacks(mHideIcon);
+        mHandler.removeCallbacks(mPoll);
+        closeNotice();
         if (mWm != null) {
             removeQuiet(mListenView);
             removeQuiet(mIconView);
@@ -251,8 +254,8 @@ public class OverlayService extends Service {
         WindowManager.LayoutParams p = new WindowManager.LayoutParams(
                 dp(64), dp(52), WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 flags, PixelFormat.TRANSLUCENT);
-        p.gravity = Gravity.TOP | Gravity.END;
-        p.x = dp(10);
+        p.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;  // top centre, the star to the right of the middle
+        p.x = dp(33);
         p.y = dp(10);
         mIconView = badge;
         mWm.addView(mIconView, p);
@@ -272,8 +275,8 @@ public class OverlayService extends Service {
         WindowManager.LayoutParams sp = new WindowManager.LayoutParams(
                 dp(64), dp(52), WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 flags, PixelFormat.TRANSLUCENT);
-        sp.gravity = Gravity.TOP | Gravity.END;
-        sp.x = dp(10) + dp(64) + dp(2);
+        sp.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;  // and the save badge to the left of it
+        sp.x = -dp(33);
         sp.y = dp(10);
         mSaveView = save;
         mWm.addView(mSaveView, sp);
@@ -325,23 +328,216 @@ public class OverlayService extends Service {
                     + "Revisa su permiso de archivos en los ajustes de Android.", 2);
             return;
         }
-        showBanner("Guardando partida…", 0);
+        // The small notice at the bottom shows it (the same one as the automatic saves): it stays while the runtime
+        // saves and its going away means the state is saved; a failure shows the problem version of it.
+        if (mSaveNotice == null) {
+            mSawSaveFile = false;
+            mSaveNotice = queueNotice(N_SAVING, asked);
+        }
+        if (onSaved == null) return;
         final Runnable[] poll = new Runnable[1];
         poll[0] = new Runnable() {
             @Override public void run() {
                 File f = stateFile();
                 if (f.isFile() && f.lastModified() >= asked - 1000) {
-                    showBanner("Partida guardada", 1);
-                    if (onSaved != null) onSaved.run();
-                } else if (System.currentTimeMillis() - asked > 25000) {
-                    showBanner("No se pudo guardar la partida. El juego estaba ocupado. "
-                            + "Prueba otra vez en unos segundos.", 2);
-                } else {
+                    onSaved.run();
+                } else if (System.currentTimeMillis() - asked <= 25000) {
                     mHandler.postDelayed(poll[0], 300);
                 }
             }
         };
         mHandler.postDelayed(poll[0], 600);
+    }
+
+    // -----------------------------------------------------------------------
+    // Small notices, bottom centre: "saving" (automatic or manual), "memory almost full", "could not save".
+    // One at a time. The first to arrive goes first, the other waits for it to close; two that arrive together
+    // (within 1.5 s: an emergency save makes both) show the memory warning first. The runtime leaves them as files in
+    // the data root: notice.saving (while a save runs), notice.fail, notice.ram (docs/QUICK-RESUME.md).
+    // -----------------------------------------------------------------------
+
+    private static final int N_SAVING = 0, N_RAM = 1, N_FAIL = 2;
+    private static final long TOGETHER_MS = 1500, SAVING_MIN_MS = 2000, RAM_MS = 5000, FAIL_MS = 4000;
+
+    private static final class Notice {
+        int kind;
+        final long ts;
+        boolean over;     // saving: the save is finished (the notice goes after its minimum time)
+        long shownAt;
+        Notice(int kind, long ts) { this.kind = kind; this.ts = ts; }
+    }
+
+    private final ArrayList<Notice> mQueue = new ArrayList<>();
+    private Notice mCur;
+    private Notice mSaveNotice;      // the notice of the save in progress (waiting or showing)
+    private boolean mSawSaveFile;    // the runtime's notice.saving has been seen for it
+    private View mNoticeView;
+    private android.animation.ObjectAnimator mPulse;
+
+    private final Runnable mPoll = new Runnable() {
+        @Override public void run() {
+            try { pollNotices(); } catch (Exception ignored) { }
+            mHandler.postDelayed(this, 300);
+        }
+    };
+
+    private File dataFile(String name) {
+        return new File(android.os.Environment.getExternalStorageDirectory(), "Persona 5 Royal/" + name);
+    }
+
+    private long readStamp(File f) {
+        try (java.io.BufferedReader r = new java.io.BufferedReader(new java.io.FileReader(f))) {
+            return Long.parseLong(r.readLine().trim());
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
+    private Notice queueNotice(int kind, long ts) {
+        Notice n = new Notice(kind, ts);
+        int at = mQueue.size();
+        while (at > 0 && mQueue.get(at - 1).ts > ts) at--;
+        mQueue.add(at, n);
+        return n;
+    }
+
+    private void endSave(boolean failed) {
+        Notice n = mSaveNotice;
+        mSaveNotice = null;
+        mSawSaveFile = false;
+        if (n == null) {
+            if (failed) queueNotice(N_FAIL, System.currentTimeMillis());
+            return;
+        }
+        n.over = true;
+        if (failed) {
+            n.kind = N_FAIL;  // the same slot: shown now if it is, or when its turn comes
+            if (n == mCur) {
+                n.shownAt = System.currentTimeMillis();
+                renderNotice();
+            }
+        }
+    }
+
+    private void pollNotices() {
+        final long now = System.currentTimeMillis();
+        File ram = dataFile("notice.ram");
+        if (ram.exists()) {
+            long ts = readStamp(ram);
+            //noinspection ResultOfMethodCallIgnored
+            ram.delete();
+            if (ts < 0 || now - ts < 15000) queueNotice(N_RAM, ts < 0 ? now : ts);
+        }
+        boolean saving = false;
+        long savingTs = now;
+        File sv = dataFile("notice.saving");
+        if (sv.exists()) {
+            long ts = readStamp(sv);
+            if (ts < 0 || now - ts < 60000) {  // older: left by a game that ended in the middle of a save
+                saving = true;
+                if (ts > 0) savingTs = ts;
+            }
+        }
+        File fail = dataFile("notice.fail");
+        boolean failed = fail.exists();
+        //noinspection ResultOfMethodCallIgnored
+        if (failed) fail.delete();
+
+        if (saving) {
+            mSawSaveFile = true;
+            if (mSaveNotice == null) mSaveNotice = queueNotice(N_SAVING, savingTs);
+        } else if (mSawSaveFile) {
+            endSave(failed);
+        } else if (mSaveNotice != null && now - mSaveNotice.ts > 25000) {
+            endSave(true);  // asked, and the runtime never started (the game was busy)
+        } else if (failed) {
+            endSave(true);
+        }
+
+        if (mCur != null) {
+            final long age = now - mCur.shownAt;
+            boolean done;
+            if (mCur.kind == N_SAVING) {
+                done = (mCur.over && age >= SAVING_MIN_MS) || age > 40000;
+                if (done && mCur == mSaveNotice) { mSaveNotice = null; mSawSaveFile = false; }
+            } else {
+                done = age >= (mCur.kind == N_RAM ? RAM_MS : FAIL_MS);
+            }
+            if (done) closeNotice();
+        }
+        if (mCur == null && !mQueue.isEmpty()) {
+            Notice pick = mQueue.get(0);
+            if (pick.kind == N_SAVING) {
+                for (Notice n : mQueue) {
+                    if (n.kind == N_RAM && n.ts <= pick.ts + TOGETHER_MS) { pick = n; break; }
+                }
+            }
+            mQueue.remove(pick);
+            mCur = pick;
+            pick.shownAt = now;
+            renderNotice();
+        }
+    }
+
+    private void closeNotice() {
+        if (mPulse != null) { mPulse.cancel(); mPulse = null; }
+        if (mNoticeView != null) {
+            mNoticeView.animate().cancel();
+            if (mWm != null) removeQuiet(mNoticeView);
+            mNoticeView = null;
+        }
+        mCur = null;
+    }
+
+    private void renderNotice() {
+        final Notice n = mCur;
+        if (n == null) return;
+        if (mPulse != null) { mPulse.cancel(); mPulse = null; }
+        if (mNoticeView != null) {
+            mNoticeView.animate().cancel();
+            removeQuiet(mNoticeView);
+            mNoticeView = null;
+        }
+        final View v;
+        int w = WindowManager.LayoutParams.WRAP_CONTENT, h = WindowManager.LayoutParams.WRAP_CONTENT;
+        if (n.kind == N_SAVING) {
+            // The save badge, small, breathing while it saves.
+            v = new SaveBadgeView(this);
+            v.setScaleX(0.6f);
+            v.setScaleY(0.6f);
+            w = dp(64);
+            h = dp(52);
+            mPulse = android.animation.ObjectAnimator.ofFloat(v, "alpha", 1f, 0.45f);
+            mPulse.setDuration(600);
+            mPulse.setRepeatCount(android.animation.ValueAnimator.INFINITE);
+            mPulse.setRepeatMode(android.animation.ValueAnimator.REVERSE);
+            mPulse.start();
+        } else {
+            boolean ram = n.kind == N_RAM;
+            TextView t = new TextView(this);
+            t.setText(ram ? "Memoria casi llena" : "No se pudo guardar");
+            t.setAllCaps(true);
+            t.setTextColor(ram ? RED : Color.WHITE);
+            t.setTextSize(11);
+            t.setLetterSpacing(0.06f);
+            t.setSingleLine(true);
+            t.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD_ITALIC));
+            t.setPadding(dp(16), dp(5), dp(16), dp(6));
+            t.setBackground(new SlantDrawable(ram ? Color.WHITE : RED, ram ? RED : Color.WHITE, dp(1), dp(8), false));
+            t.setRotation(-2f);
+            t.setAlpha(0f);
+            t.animate().alpha(1f).setDuration(150).start();
+            v = t;
+        }
+        int flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                  | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                  | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN;
+        WindowManager.LayoutParams p = new WindowManager.LayoutParams(
+                w, h, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, flags, PixelFormat.TRANSLUCENT);
+        p.gravity = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
+        p.y = dp(n.kind == N_SAVING ? 2 : 12);
+        mNoticeView = v;
+        mWm.addView(v, p);
     }
 
     private final Runnable mHideBanner = new Runnable() {

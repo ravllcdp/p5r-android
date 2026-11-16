@@ -139,7 +139,7 @@ void start_memory_guard() {
                 last_emergency = t1;
                 log("memory: the system has %llu MB left (it has 2000 or more when the game plays): saving a state now",
                     (unsigned long long)avail_mb);
-                nx::snap::request_save("memory running out in the system");
+                nx::snap::request_save_memory("memory running out in the system");
             }
             if (const uint64_t psi = psi_some_total_us(); psi) {
                 psi_ring[ticks % 4] = psi;
@@ -148,7 +148,7 @@ void start_memory_guard() {
                     last_emergency = t1;
                     log("memory: the system stalled %llu ms on memory in the last second: saving a state now",
                         (unsigned long long)((psi - old) / 1000));
-                    nx::snap::request_save("memory pressure in the system");
+                    nx::snap::request_save_memory("memory pressure in the system");
                 }
             }
             // The first minute, every 2 s: the low-memory kills at start-up happen before the 30 s line is ever written.

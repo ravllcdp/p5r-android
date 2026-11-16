@@ -1015,6 +1015,30 @@ void request_save(const char* why) {
     g_save_requested.store(true);
 }
 
+// Notices for the overlay (OverlayService polls them): files in the data root holding the time in epoch ms.
+//   notice.saving  exists while a save is running      notice.fail  a save did not work (written before saving goes)
+//   notice.ram     the phone is short of memory (consumed by the overlay)
+static void notice_write(const char* name) {
+    if (FILE* f = std::fopen((plat::data_root() + "/" + name).c_str(), "w")) {
+        const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 std::chrono::system_clock::now().time_since_epoch()).count();
+        std::fprintf(f, "%lld\n", ms);
+        std::fclose(f);
+    }
+}
+static void notice_remove(const char* name) { std::remove((plat::data_root() + "/" + name).c_str()); }
+
+void request_save_memory(const char* why) {
+    static std::atomic<int64_t> last_ms{0};
+    const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (now - last_ms.load() >= 60000) {  // one warning a minute at most
+        last_ms.store(now);
+        notice_write("notice.ram");
+    }
+    request_save(why);
+}
+
 void start_watcher() {
     std::thread([] {
         using clock = std::chrono::steady_clock;
@@ -1026,11 +1050,17 @@ void start_watcher() {
             std::fclose(f);
         }
         log("snap: automatic saving every %d s (0 = off) and on pause", auto_seconds);
+        notice_remove("notice.saving"), notice_remove("notice.fail"), notice_remove("notice.ram");  // left by an earlier run
         auto last = clock::now();
         auto save = [&](const char* why) {
             log("snap: saving (%s)", why);
+            notice_write("notice.saving");
             const bool ok = capture_safely(plat::internal_dir() + "/snap");
-            if (!ok) log("snap: could not save a state");
+            if (!ok) {
+                log("snap: could not save a state");
+                notice_write("notice.fail");  // before saving goes: the overlay reads the failure when it sees it end
+            }
+            notice_remove("notice.saving");
             // A moment that cannot be saved (a thread deep in the runtime): try again soon, not after a full period.
             last = ok ? clock::now() : clock::now() - std::chrono::seconds(std::max(0, auto_seconds - 30));
             return ok;

@@ -80,6 +80,8 @@ void set_paused(bool paused);
 // Asks the watcher for a save as soon as it can (not within 20 s of another): the system is short of memory and may end
 // the process within seconds. `why` must stay valid (a literal).
 void request_save(const char* why);
+// The same, for a phone short of memory: also leaves the notice the overlay shows ("Memoria casi llena"), once a minute.
+void request_save_memory(const char* why);
 
 // Debug trigger: a file named snap.freeze in the data root (its text: how many ms to stay frozen, default 3000)
 // freezes, holds and thaws, and logs how long each step took. Replaced by the overlay button in a later step.
