@@ -118,6 +118,11 @@ void start_memory_guard() {
             r.end = t1;
             read_ns += t1 - t0, read_max = std::max(read_max, t1 - t0);
             if (f > peak) peak = f;
+            // The first minute, every 2 s: the low-memory kills at start-up happen before the 30 s line is ever written.
+            if (ticks < 240 && ticks % 8 == 0)
+                log("memory: start-up %llu s: %llu MB, MemAvailable %llu MB, SwapFree %llu MB", (unsigned long long)(ticks / 4),
+                    (unsigned long long)(f >> 20), (unsigned long long)(kb_field("/proc/meminfo", "MemAvailable:") >> 10),
+                    (unsigned long long)(kb_field("/proc/meminfo", "SwapFree:") >> 10));
             if (++ticks % 120 == 0) {
                 log("memory: %.2f GB %s (peak %.2f GB, limit %.1f GB), read avg %.2f ms, max %.2f ms",
                     double(f) / double(1ull << 30), smaps ? "Pss (smaps)" : "resident (statm)",
