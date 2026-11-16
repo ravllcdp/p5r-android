@@ -93,6 +93,12 @@ std::unordered_map<uint64_t, std::set<uint64_t>> g_by_obj;  // guest object -> i
 std::map<std::string, uint64_t> g_slots;                // "name/x0/x1" -> sequence
 uint64_t g_seq = 0;
 
+std::string slot_key(uint64_t obj, const char* name, uint64_t x1) {
+    if (!std::strncmp(name, "nvnWindow", 9) || !std::strncmp(name, "nvnDevice", 9) || !std::strncmp(name, "nvnProgram", 10))
+        return std::to_string(obj) + "/" + name + "/0";
+    return std::to_string(obj) + "/" + name + "/" + std::to_string(x1);
+}
+
 void drop_object(uint64_t obj) {
     auto it = g_by_obj.find(obj);
     if (it == g_by_obj.end()) return;
@@ -137,9 +143,7 @@ void journal_note(const char* name, const uint64_t* args, uint64_t /*result*/) {
     }
     if (s.kind == kInit) drop_object(obj);
     if (s.kind == kSlot) {
-        std::string key = std::to_string(obj) + "/" + name + "/" + std::to_string(args[1]);
-        if (!std::strncmp(name, "nvnWindow", 9) || !std::strncmp(name, "nvnDevice", 9) || !std::strncmp(name, "nvnProgram", 10))
-            key = std::to_string(obj) + "/" + name + "/0";
+        const std::string key = slot_key(obj, name, args[1]);
         auto old = g_slots.find(key);
         if (old != g_slots.end()) {
             g_entries.erase(old->second);
@@ -209,6 +213,22 @@ bool journal_replay(CPU& c, const uint8_t* p, size_t size) {
         if (!get_(&wn, 4) || size_t(end - p) < size_t(wn) * 8) return false;
         e.window_textures.resize(wn);
         if (wn) get_(e.window_textures.data(), size_t(wn) * 8);
+    }
+    // The replay calls the functions directly, not through the thunks that feed the journal, so a restored process would
+    // start with an empty journal and a save made in it would only hold what happened after the restore (the objects of
+    // the first session gone: black picture on the next restore). The restored entries become this process's journal.
+    {
+        std::lock_guard lk(g_lock);
+        g_entries.clear(), g_by_obj.clear(), g_slots.clear();
+        g_seq = 0;
+        for (Entry& e : list) {
+            const uint64_t seq = ++g_seq;
+            const uint64_t obj = e.args[0];
+            auto sp = specs().find(e.name);
+            if (sp != specs().end() && sp->second.kind == kSlot) g_slots[slot_key(obj, e.name.c_str(), e.args[1])] = seq;
+            g_by_obj[obj].insert(seq);
+            g_entries[seq] = e;
+        }
     }
     const uint64_t buf = kernel_alloc(0x11000);
     size_t done = 0, failed = 0;
