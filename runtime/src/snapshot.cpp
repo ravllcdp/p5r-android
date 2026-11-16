@@ -30,6 +30,7 @@ namespace nx::snap {
 std::atomic<bool> g_freeze{false};
 
 namespace {
+bool g_restored_process = false;  // the main thread of a restored process runs one frame shallower than a fresh one
 
 std::mutex g_m;
 std::condition_variable g_parked_cv;  // a thread parked (the freezer listens)
@@ -566,7 +567,7 @@ static bool save_state(const std::string& path, const DumpStats& mem) {
             const bool live = t->started && !t->exited;
             const bool is_main = t->entry == 0;
             const bool hle_loop = !t->loop_name.empty() && t->loop_ctx;
-            if (live && !hle_loop && t->snap_depth != (is_main ? 2 : 1)) {
+            if (live && !hle_loop && t->snap_depth != (is_main ? (g_restored_process ? 1 : 2) : 1)) {
                 log("snap: thread %x (%s) is %d calls deep inside the runtime, cannot be saved here", handle,
                     is_main ? "main" : "worker", t->snap_depth);
                 clean = false;
@@ -963,6 +964,7 @@ bool restore_and_run() {
         std::vector<std::pair<std::string, std::vector<uint8_t>>>* hooks;
         std::vector<std::shared_ptr<KThread>>* live;
     } ctx{dir, &journal, &graph, &hook_blobs, &live};
+    g_restored_process = true;
     kernel_run_restored(
         main_thread.get(),
         [](KThread* t, void* p) {

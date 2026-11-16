@@ -429,6 +429,7 @@ std::shared_ptr<KThread> kernel_adopt_thread(const KThreadImage& im) {
     t->ctx = im.ctx;
     t->handle = im.handle;
     t->snap_code = im.code;
+    t->snap_depth = 1;  // it resumes through nce::resume, one frame deep, before its first call into the runtime
     t->loop_name = im.loop_name;
     for (int i = 0; i < 8; i++) t->snap_args[i] = im.args[i];
     std::lock_guard lk(g_k);
