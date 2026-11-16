@@ -74,7 +74,7 @@ bool restore_requested();
 bool restore_and_run();
 
 // Automatic saving (a thread started with the watcher): every few minutes (the first line of snap.auto in the data root:
-// seconds, 0 = never, default 300) and whenever the app is paused (home, app switcher, screen off), when the game holds
+// seconds, 0 = never, default 600) and whenever the app is paused (home, app switcher, screen off), when the game holds
 // still anyway. set_paused is called from the platform's lifecycle events.
 void set_paused(bool paused);
 

@@ -98,6 +98,53 @@ void cb_stats(int32_t frames, size_t missing_bytes) {
     s.from_ns = s.last_ns = now;
 }
 
+
+// When the game's mixer is held (a save freezes every guest thread) the ring runs dry and the device would get zeros:
+// a click and a hole. Instead the last 24 ms played are run back and forth (backwards first, so the first concealed
+// frame continues the wave without a step), fading to silence over 90 ms, and when real sound returns it is
+// crossfaded in over 5 ms. Called under g_audio.
+constexpr int kGrain = 1152;       // 24 ms of history
+constexpr int kDecayFrames = 4320; // 90 ms from full volume to silence
+constexpr int kJoinFrames = 240;   // 5 ms crossfade back to the real sound
+struct Conceal {
+    uint32_t hist[kGrain] = {};
+    int pos = 0;       // next write
+    int have = 0;      // valid frames in hist
+    int age = 0, dir = 1;  // concealed read: age 0 = the newest real frame
+    int gap = 0;       // frames concealed so far in this hole
+    int join_left = 0; // crossfade frames still to do
+} g_cc;
+
+inline int16_t lo16(uint32_t f) { return int16_t(f & 0xFFFF); }
+inline int16_t hi16(uint32_t f) { return int16_t(f >> 16); }
+inline uint32_t pack16(int a, int b) {
+    a = std::max(-32768, std::min(32767, a)), b = std::max(-32768, std::min(32767, b));
+    return uint32_t(uint16_t(int16_t(a))) | (uint32_t(uint16_t(int16_t(b))) << 16);
+}
+void cc_push(uint32_t f) {
+    g_cc.hist[g_cc.pos] = f;
+    g_cc.pos = (g_cc.pos + 1) % kGrain;
+    if (g_cc.have < kGrain) g_cc.have++;
+}
+// The next concealed frame, at the volume this point of the hole has.
+uint32_t cc_next() {
+    Conceal& c = g_cc;
+    if (c.have == 0) return 0;
+    const uint32_t f = c.hist[((c.pos - 1 - c.age) % kGrain + kGrain) % kGrain];
+    const int lim = c.have - 1;
+    if (lim > 0) {
+        c.age += c.dir;
+        if (c.age > lim) c.age = lim - 1, c.dir = -1;
+        else if (c.age < 0) c.age = 1, c.dir = 1;
+    }
+    const int vol = c.gap >= kDecayFrames ? 0 : 32768 * (kDecayFrames - c.gap) / kDecayFrames;
+    c.gap++;
+    return pack16(lo16(f) * vol >> 15, hi16(f) * vol >> 15);
+}
+void cc_reset() {
+    g_cc.age = 0, g_cc.dir = 1, g_cc.gap = 0, g_cc.join_left = 0;
+}
+
 aaudio_data_callback_result_t audio_cb(AAudioStream*, void*, void* out, int32_t frames) {
 #if NX_DIAGNOSTICS_ON
     const uint64_t diag_start = monotonic_ns();
@@ -113,11 +160,27 @@ aaudio_data_callback_result_t audio_cb(AAudioStream*, void*, void* out, int32_t 
         g_occ_min.store(std::min(g_occ_min.load(std::memory_order_relaxed), occupancy), std::memory_order_relaxed);
         g_occ_max.store(std::max(g_occ_max.load(std::memory_order_relaxed), occupancy), std::memory_order_relaxed);
         const uint64_t n = std::min<uint64_t>(uint64_t(frames), occupancy);
-        for (uint64_t k = 0; k < n; k++) dst[k] = g_ring[(g_read + k) % kRingFrames];
+        for (uint64_t k = 0; k < n; k++) {
+            uint32_t f = g_ring[(g_read + k) % kRingFrames];
+            if (g_cc.gap > 0 && g_cc.join_left == 0) g_cc.join_left = kJoinFrames;  // real sound is back after a hole
+            if (g_cc.join_left > 0) {
+                const uint32_t c = cc_next();
+                const int w = kJoinFrames - g_cc.join_left;  // 0..kJoinFrames-1: how much of the real sound
+                f = pack16((lo16(c) * (kJoinFrames - w) + lo16(f) * w) / kJoinFrames,
+                           (hi16(c) * (kJoinFrames - w) + hi16(f) * w) / kJoinFrames);
+                if (--g_cc.join_left == 0) cc_reset();
+            } else {
+                cc_push(f);
+            }
+            dst[k] = f;
+        }
         g_read += n;
         g_device += uint64_t(frames);
         missing = size_t(frames) - size_t(n);
-        if (missing) std::memset(dst + n, 0, missing * 4);  // underrun: silence
+        for (size_t k = 0; k < missing; k++) {  // underrun: the last sound fading out, not a hole
+            if (g_cc.join_left > 0) cc_reset();   // the hole came back during the crossfade
+            dst[n + k] = cc_next();
+        }
         const uint64_t due = g_read + g_delay_frames.load(std::memory_order_relaxed);
         while (!g_pending.empty() && g_pending.front().end <= due) {
             finished.push_back(g_pending.front().ctx);

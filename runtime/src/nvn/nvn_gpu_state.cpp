@@ -152,16 +152,18 @@ struct Staging {
         bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         p_vkBeginCommandBuffer(cb, &bi);
     }
-    bool submit_and_wait() {
+    // Queued, not waited for: the queue runs it in order, so it reads the images as they are now even if the game's
+    // next submits come before it finishes (the last barrier of the copy is a full one).
+    bool submit() {
         p_vkEndCommandBuffer(cb);
         VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
         si.commandBufferCount = 1;
         si.pCommandBuffers = &cb;
         VkDevice d = vk_device();
         p_vkResetFences(d, 1, &fence);
-        return p_vkQueueSubmit(vk_queue(), 1, &si, fence) == VK_SUCCESS &&
-               p_vkWaitForFences(d, 1, &fence, VK_TRUE, UINT64_MAX) == VK_SUCCESS;
+        return p_vkQueueSubmit(vk_queue(), 1, &si, fence) == VK_SUCCESS;
     }
+    bool wait() { return p_vkWaitForFences(vk_device(), 1, &fence, VK_TRUE, UINT64_MAX) == VK_SUCCESS; }
 };
 
 VkBufferImageCopy copy_of(const GpuImage& g, const Region& r) {
@@ -186,13 +188,18 @@ struct GpuCapture {
     Staging st;
     std::vector<Header> headers;
     std::vector<uint64_t> offsets;  // where each image's bytes start in st.ptr
-    ~GpuCapture() { st.destroy(); }
+    std::vector<std::shared_ptr<GpuImage>> keep;  // the GPU reads these after the game runs again: not freed meanwhile
+    bool submitted = false;
+    ~GpuCapture() {
+        if (submitted) cap_wait_noexcept();
+        st.destroy();
+    }
+    void cap_wait_noexcept() { st.wait(); }
 };
 
 std::shared_ptr<GpuCapture> gpu_state_capture() {
     wait_submits_so_far(kWaitFinish);
-    worker_finish();
-    gpu_wait(gpu_serial());
+    worker_finish();  // every submit of the game is in the queue; the copy goes behind them (no wait for the GPU)
     std::vector<std::pair<uint64_t, std::shared_ptr<GpuImage>>> images;
     {
         std::shared_lock lk(objects_lock());
@@ -205,6 +212,7 @@ std::shared_ptr<GpuCapture> gpu_state_capture() {
         }
     }
     auto cap = std::make_shared<GpuCapture>();
+    for (auto& gi : images) cap->keep.push_back(gi.second);
     struct Item {
         GpuImage* img;
         std::vector<Region> regs;
@@ -247,14 +255,18 @@ std::shared_ptr<GpuCapture> gpu_state_capture() {
         }
         transition(cap->st.cb, g, back);
     }
-    if (!cap->st.submit_and_wait()) return nullptr;
-    log("snap: gpu: %zu images, %llu MB", cap->headers.size(), (unsigned long long)(total >> 20));
+    if (!cap->st.submit()) return nullptr;
+    cap->submitted = true;
+    log("snap: gpu: %zu images, %llu MB queued", cap->headers.size(), (unsigned long long)(total >> 20));
     return cap;
 }
 
 bool gpu_state_write(GpuCapture& cap, const std::function<bool(const void*, size_t)>& out) {
     const char magic[8] = {'P', '5', 'R', 'G', 'P', 'U', '0', '1'};
     uint32_t n = uint32_t(cap.headers.size());
+    if (cap.submitted && !cap.st.wait()) return false;  // the copy the game was held for, finished meanwhile
+    cap.submitted = false;
+    cap.keep.clear();
     bool ok = out(magic, 8) && out(&n, 4);
     for (size_t i = 0; ok && i < cap.headers.size(); i++) {
         const Header& h = cap.headers[i];

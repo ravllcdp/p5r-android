@@ -1013,7 +1013,7 @@ void start_watcher() {
     std::thread([] {
         using clock = std::chrono::steady_clock;
         const std::string trigger = plat::data_root() + "/snap.freeze";
-        int auto_seconds = 300;
+        int auto_seconds = 600;
         if (FILE* f = std::fopen((plat::data_root() + "/snap.auto").c_str(), "r")) {
             int v = 0;
             if (std::fscanf(f, "%d", &v) == 1 && v >= 0) auto_seconds = v;
