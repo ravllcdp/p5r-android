@@ -132,6 +132,15 @@ void start_memory_guard() {
             if (f > peak) peak = f;
             // Memory pressure of the whole phone (other apps, the page cache): lmkd ends processes when it lasts, ours
             // included, whatever it uses. Over a second, 100 ms or more stalled (lmkd acts at 70 ms) saves a state now.
+            // The stall comes late when memory goes fast (a test: 0.6 s before the kill). What the phone has left is
+            // the earlier sign: it has 2 to 3 GB while the game plays, and 1.3 GB or less is the road to a kill.
+            if (const uint64_t avail_mb = kb_field("/proc/meminfo", "MemAvailable:") >> 10;
+                avail_mb && avail_mb < 1300 && t1 - last_emergency >= 120ull * 1000000000ull) {
+                last_emergency = t1;
+                log("memory: the system has %llu MB left (it has 2000 or more when the game plays): saving a state now",
+                    (unsigned long long)avail_mb);
+                nx::snap::request_save("memory running out in the system");
+            }
             if (const uint64_t psi = psi_some_total_us(); psi) {
                 psi_ring[ticks % 4] = psi;
                 const uint64_t old = psi_ring[(ticks + 1) % 4];
